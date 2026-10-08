@@ -1,41 +1,43 @@
-# Kelisim (Келісім)
+# Kelisim
 
-> **AI contract trap detection and immutable proof-of-existence verification on the Solana blockchain.**
+**What it does:** Analyzes commercial contracts for hidden risk traps and anchors immutable SHA-256 document fingerprints onto the Solana blockchain.
 
-**Target Audience:** Small and medium-sized business owners, entrepreneurs, and tenants in Kazakhstan who negotiate and sign commercial contracts without dedicated legal teams.
+**Target audience:** Small and medium-sized business owners, entrepreneurs, and tenants who negotiate agreements without in-house legal teams.
+
+**Solana Devnet Record:** Cryptographic SHA-256 hash formatted as `Kelisim v1 | sha256:<hash>` recorded via the SPL Memo program to provide tamper-proof proof-of-existence without exposing confidential contract contents.
 
 ---
 
 ## Problem
 
-- **Hidden Contract Traps:** Commercial agreements (leases, supply contracts, contractor agreements) frequently contain predatory clauses—unilateral rent increases, disproportionate security deposits, and harsh auto-renewals.
-- **High Legal Costs:** Hiring contract lawyers for every revision is slow and prohibitive for small businesses and solo founders.
-- **Post-Signing Alterations & Disputes:** After signing, parties frequently dispute which draft was finalized, or one party disputes the exact document version.
+- **Hidden Contract Traps:** Commercial agreements (leases, supplier contracts, service agreements) routinely include predatory clauses such as unilateral fee increases, disproportionate penalties, and automatic lock-ins.
+- **Prohibitive Legal Costs:** Hiring contract lawyers for every draft revision is slow and expensive for small businesses and solo founders.
+- **Post-Signing Alterations & Disputes:** Counterparties often dispute which draft was finalized or claim that clauses were modified after signing.
 
 ---
 
 ## Solution
 
-1. **Automated Clause Risk Assessment:** Analyzes agreements to highlight high-risk clauses, calculate real monetary impact in tenge (₸), and provide actionable revision suggestions.
-2. **Counterparty Letter Generator:** Generates structured, polite counter-proposals with compromise terms ready to send to the counterparty.
-3. **Zero-Knowledge Document Stamping:** Computes SHA-256 hashes locally in the browser so confidential business terms never leave the client device.
-4. **Permanent Digital Verification Certificate:** Produces a verifiable digital receipt with transaction signatures, timestamps, and Explorer links.
+- **Automated Clause Risk Assessment:** Identifies predatory clauses, estimates potential monetary exposure in Kazakhstani tenge (₸), and provides concrete revision recommendations.
+- **Counterparty Letter Generator:** Generates structured, polite counter-proposals with balanced compromise terms ready to send to counterparties.
+- **Client-Side SHA-256 Stamping:** Computes document hashes locally in the browser so confidential business terms never leave the user's device.
+- **Verifiable Proof-of-Existence Certificate:** Produces a downloadable, tamper-evident digital certificate with transaction signature, timestamp, and Solana Explorer link.
 
 ---
 
 ## How it uses Solana
 
 - **Network:** Solana Devnet.
-- **Mechanism:** [SPL Memo Program](https://spl.solana.com/memo) (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`).
-- **What is recorded on-chain:**
+- **Program:** [SPL Memo Program](https://spl.solana.com/memo) (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`).
+- **On-chain record:**
   ```text
   Kelisim v1 | sha256:<64_character_hex_hash>
   ```
-- **Why Solana Devnet:**
-  - **Zero Privacy Leakage:** Only the cryptographic SHA-256 digest is sent on-chain; sensitive commercial terms, party names, and confidential pricing remain 100% private.
-  - **Tamper-Evident Timestamp:** Solana’s high-throughput ledger establishes irreversible proof that this exact document existed at a specific block time.
-  - **Decentralized Verification:** Anyone can independently verify contract integrity via the Solana Explorer without trusting centralized third-party servers.
-  - **Phantom Wallet Integration:** Users sign transactions directly through Phantom with sub-second confirmation and negligible fees.
+- **Why Solana:**
+  - **Zero Privacy Leakage:** Confidential terms, names, and pricing stay completely private; only the one-way cryptographic SHA-256 digest is published.
+  - **Tamper-Evident Timestamp:** Records immutable proof that this exact document existed at a specific block time.
+  - **Independent Verification:** Anyone can independently verify contract authenticity via Solana Explorer without relying on centralized servers.
+  - **Fast & Inexpensive:** Sub-second confirmation and near-zero transaction fees signed via Phantom Wallet.
 
 ---
 
@@ -44,9 +46,9 @@
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) (v18+) or [Bun](https://bun.sh/)
-- [Phantom Wallet](https://phantom.app/) browser extension configured to **Solana Devnet** with test SOL from [solfaucet.com](https://solfaucet.com/)
+- [Phantom Wallet](https://phantom.app/) browser extension set to **Solana Devnet** with test SOL from [solfaucet.com](https://solfaucet.com/)
 
-### Installation & Local Development
+### Setup & Launch
 
 1. **Clone the repository:**
    ```bash
@@ -61,23 +63,29 @@
    bun install
    ```
 
-3. **Start the development server:**
+3. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Add your GEMINI_API_KEY if testing AI contract analysis
+   ```
+
+4. **Start the development server:**
    ```bash
    npm run dev
    ```
    Open `http://localhost:3000` in your browser.
 
-4. **Build for production:**
+5. **Build for production:**
    ```bash
    npm run build
    ```
 
 ---
 
-## Team / Команда
+## Team
 
-- **Rasim Musayev** — Founder & Lead Developer (`rasimmusaev2007@gmail.com`)
-- **Fatima Panabek** — Универсал
-- **Багдан Орынбасар** — Универсал
-- **Алишер Балгалий** — Универсал
-- **Нуржигит Кайратулы** — Универсал
+- **Rasim Musayev** — Founder & Lead Developer
+- **Fatima Panabek** — Generalist & Operations
+- **Bagdan Orynbassar** — Generalist & Product
+- **Alisher Balgaliy** — Generalist & Frontend
+- **Nurzhigit Kairatuly** — Generalist & Legal Domain

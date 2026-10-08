@@ -5,6 +5,9 @@
 
 import { GoogleGenAI } from "@google/genai";
 
+// @ts-ignore
+import mammoth from 'mammoth';
+
 const SYSTEM_INSTRUCTION_STEP1 = `Ты помощник, который проверяет договоры для предпринимателей и малого бизнеса в Казахстане. Твоя задача: прочитать договор и найти условия, которые могут быть невыгодны стороне, подписывающей договор, и объяснить их простым языком человеку без юридического образования.
 
 Как анализировать:
@@ -112,7 +115,10 @@ export async function handleAnalyzeRequest(req: any, res: any) {
 
       const contentsParts: any[] = [];
 
-      const isPdf = (mimeType && mimeType.includes('pdf')) || (fileName && fileName.toLowerCase().endsWith('.pdf'));
+      const lowerName = (fileName || '').toLowerCase();
+      const isPdf = (mimeType && mimeType.includes('pdf')) || lowerName.endsWith('.pdf');
+      const isImage = (mimeType && mimeType.startsWith('image/')) || /\.(png|jpe?g|webp)$/i.test(lowerName);
+      const isDocx = (mimeType && (mimeType.includes('wordprocessingml') || mimeType.includes('docx'))) || lowerName.endsWith('.docx');
 
       if (isPdf && fileBase64) {
         contentsParts.push({
@@ -123,6 +129,38 @@ export async function handleAnalyzeRequest(req: any, res: any) {
         });
         contentsParts.push({
           text: `Перед тобой проект договора в формате PDF (${fileName || 'документ'}). Внимательно проанализируй все его пункты и выяви условия, опасные для подписывающей стороны, согласно системной инструкции. Верни только JSON.`,
+        });
+      } else if (isImage && fileBase64) {
+        const imgMime = mimeType && mimeType.startsWith('image/')
+          ? mimeType
+          : (lowerName.endsWith('.png') ? 'image/png' : 'image/jpeg');
+        contentsParts.push({
+          inlineData: {
+            mimeType: imgMime,
+            data: fileBase64,
+          },
+        });
+        contentsParts.push({
+          text: `Перед тобой изображение договора или страницы документа (${fileName || 'договор'}). Внимательно прочитай весь текст на изображении, проанализируй все его пункты и выяви условия, опасные для подписывающей стороны, согласно системной инструкции. Верни только JSON.`,
+        });
+      } else if (isDocx && fileBase64) {
+        let textContent = '';
+        try {
+          const docBuffer = Buffer.from(fileBase64, 'base64');
+          const mammothResult = await mammoth.extractRawText({ buffer: docBuffer });
+          textContent = mammothResult.value;
+        } catch (docxErr) {
+          console.error('Failed to parse docx via mammoth:', docxErr);
+        }
+
+        if (!textContent || textContent.trim().length === 0) {
+          return res.status(400).json({
+            error: 'Не удалось извлечь текст из файла DOCX. Убедитесь, что файл содержит текст договора и не повреждён.',
+          });
+        }
+
+        contentsParts.push({
+          text: `Текст документа для анализа из файла DOCX (${fileName || 'договор'}):\n\n${textContent}\n\nПроанализируй текст договора в соответствии с системной инструкции и верни строго JSON.`,
         });
       } else {
         // Plain text document

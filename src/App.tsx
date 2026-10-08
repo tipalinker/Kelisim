@@ -65,9 +65,41 @@ interface StampedRecord {
   explanation: string;
   signature?: string;
   explorerUrl?: string;
+  versionLabel?: string;
+  originalFileName?: string;
 }
 
 const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4 MB
+
+function validateContractFile(file: File): { valid: boolean; error?: string } {
+  const lowerName = file.name.toLowerCase();
+  const validExtensions = ['.pdf', '.docx', '.txt', '.png', '.jpg', '.jpeg'];
+  const hasValidExt = validExtensions.some((ext) => lowerName.endsWith(ext));
+  const validMimes = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'image/png',
+    'image/jpeg',
+  ];
+  const hasValidMime = validMimes.includes(file.type);
+
+  if (!hasValidExt && !hasValidMime) {
+    return {
+      valid: false,
+      error: 'Неподдерживаемый формат файла. Разрешены только PDF, DOCX, TXT, PNG, JPG (до 4 МБ).',
+    };
+  }
+
+  if (file.size > MAX_FILE_SIZE) {
+    return {
+      valid: false,
+      error: `Файл превышает допустимый размер (до 4 МБ). Текущий размер: ${formatFileSize(file.size)}.`,
+    };
+  }
+
+  return { valid: true };
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' байт';
@@ -169,7 +201,21 @@ export default function App() {
   const [phantomNotFound, setPhantomNotFound] = useState<boolean>(false);
   const [isWalletMenuOpen, setIsWalletMenuOpen] = useState<boolean>(false);
 
+  // Contract version tracking
+  const [isAgreedVersion, setIsAgreedVersion] = useState<boolean>(false);
+  const [originalFileName, setOriginalFileName] = useState<string | null>(null);
+  const [originalFileSize, setOriginalFileSize] = useState<number | null>(null);
+  const [replacementSource, setReplacementSource] = useState<'manual' | 'rechecked' | null>(null);
+
+  // Agreed upload modal and risk warning modal
+  const [isAgreedUploadModalOpen, setIsAgreedUploadModalOpen] = useState<boolean>(false);
+  const [stagedAgreedFile, setStagedAgreedFile] = useState<File | null>(null);
+  const [agreedFileError, setAgreedFileError] = useState<string | null>(null);
+  const [isAgreedDragging, setIsAgreedDragging] = useState<boolean>(false);
+  const [isRiskWarningModalOpen, setIsRiskWarningModalOpen] = useState<boolean>(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const agreedFileInputRef = useRef<HTMLInputElement>(null);
 
   // Save blockchain records to localStorage
   useEffect(() => {
@@ -192,26 +238,20 @@ export default function App() {
     }
   }, [analysisResult]);
 
-  // Validate file
+  // Validate initial file
   const validateAndSetFile = (file: File) => {
     setFileError(null);
     setAnalysisError(null);
     setAnalysisResult(null);
     setLetterText('');
+    setIsAgreedVersion(false);
+    setOriginalFileName(null);
+    setOriginalFileSize(null);
+    setReplacementSource(null);
 
-    const lowerName = file.name.toLowerCase();
-    const isPdf = lowerName.endsWith('.pdf') || file.type === 'application/pdf';
-    const isTxt = lowerName.endsWith('.txt') || file.type === 'text/plain';
-
-    if (!isPdf && !isTxt) {
-      setFileError('Неподдерживаемый формат файла. Разрешены только файлы PDF и TXT.');
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return false;
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      setFileError('Файл превышает допустимый размер (до 4 МБ). Пожалуйста, выберите файл меньшего размера.');
+    const validation = validateContractFile(file);
+    if (!validation.valid) {
+      setFileError(validation.error || 'Ошибка формата файла.');
       setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       return false;
@@ -245,13 +285,53 @@ export default function App() {
     }
   };
 
-  // Step 1: Real AI Trap Check via /api/analyze
-  const startTrapCheck = async () => {
-    if (!selectedFile) {
+  // Staging for agreed file modal
+  const validateAndStageAgreedFile = (file: File) => {
+    setAgreedFileError(null);
+    const validation = validateContractFile(file);
+    if (!validation.valid) {
+      setAgreedFileError(validation.error || 'Ошибка формата файла.');
+      setStagedAgreedFile(null);
+      if (agreedFileInputRef.current) agreedFileInputRef.current.value = '';
+      return false;
+    }
+    setStagedAgreedFile(file);
+    return true;
+  };
+
+  const handleAgreedDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsAgreedDragging(true);
+  };
+
+  const handleAgreedDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsAgreedDragging(false);
+  };
+
+  const handleAgreedDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsAgreedDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      validateAndStageAgreedFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleAgreedFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      validateAndStageAgreedFile(e.target.files[0]);
+    }
+  };
+
+  // Step 1 & Step 2: Real AI Trap Check via /api/analyze
+  const startTrapCheck = async (targetFile?: File) => {
+    const fileToAnalyze = targetFile || selectedFile;
+    if (!fileToAnalyze) {
       setFileError('Сначала загрузите договор');
       return;
     }
 
+    setSelectedFile(fileToAnalyze);
     setFileError(null);
     setAnalysisError(null);
     setCurrentStep(2);
@@ -259,15 +339,11 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     try {
-      const isPdf = selectedFile.name.toLowerCase().endsWith('.pdf') || selectedFile.type === 'application/pdf';
-      let fileBase64 = '';
+      const isTxt = fileToAnalyze.name.toLowerCase().endsWith('.txt') || fileToAnalyze.type === 'text/plain';
+      const fileBase64 = await readFileAsBase64(fileToAnalyze);
       let fileText = '';
-
-      if (isPdf) {
-        fileBase64 = await readFileAsBase64(selectedFile);
-      } else {
-        fileText = await readFileAsText(selectedFile);
-        fileBase64 = await readFileAsBase64(selectedFile);
+      if (isTxt) {
+        fileText = await readFileAsText(fileToAnalyze);
       }
 
       const response = await fetch('/api/analyze', {
@@ -277,8 +353,8 @@ export default function App() {
         },
         body: JSON.stringify({
           action: 'check_traps',
-          fileName: selectedFile.name,
-          mimeType: selectedFile.type || (isPdf ? 'application/pdf' : 'text/plain'),
+          fileName: fileToAnalyze.name,
+          mimeType: fileToAnalyze.type || '',
           fileBase64,
           fileText,
         }),
@@ -301,6 +377,50 @@ export default function App() {
       setAnalysisError(err?.message || 'Ошибка связи с сервером анализа. Проверьте интернет-соединение и повторите попытку.');
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  // Navigate to stamping with warning protection if risky contract
+  const handleProceedToStamping = () => {
+    const hasRisks = analysisResult && (
+      analysisResult.общий_уровень_риска === 'высокий' ||
+      analysisResult.общий_уровень_риска === 'средний' ||
+      (analysisResult.ловушки && analysisResult.ловушки.length > 0)
+    );
+
+    // If it's an unreplaced original draft and risks are detected, show the warning modal
+    if (!isAgreedVersion && hasRisks) {
+      setIsRiskWarningModalOpen(true);
+    } else {
+      setCurrentStep(3);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  // Apply agreed replacement file: Scenario A (recheck) or Scenario B (direct stamp)
+  const handleApplyAgreedFile = async (scenario: 'recheck' | 'direct_stamp') => {
+    if (!stagedAgreedFile) return;
+
+    const prevName = originalFileName || selectedFile?.name || 'Исходный черновик';
+    const prevSize = originalFileSize || (selectedFile ? selectedFile.size : 0);
+
+    setOriginalFileName(prevName);
+    setOriginalFileSize(prevSize);
+    setIsAgreedVersion(true);
+
+    const newDoc = stagedAgreedFile;
+    setSelectedFile(newDoc);
+    setStagedAgreedFile(null);
+    setAgreedFileError(null);
+    setIsAgreedUploadModalOpen(false);
+
+    if (scenario === 'recheck') {
+      setReplacementSource('rechecked');
+      await startTrapCheck(newDoc);
+    } else {
+      setReplacementSource('manual');
+      setCurrentStep(3);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -540,6 +660,10 @@ export default function App() {
         explanation: 'Если в документе изменить даже одну запятую, отпечаток не совпадёт',
         signature,
         explorerUrl,
+        versionLabel: isAgreedVersion
+          ? `Согласованная версия v2 ${replacementSource === 'manual' ? '(заменена вручную)' : '(проверена повторно)'}`
+          : 'Исходный черновик',
+        originalFileName: isAgreedVersion && originalFileName ? originalFileName : undefined,
       });
 
     } catch (err: any) {
@@ -562,6 +686,14 @@ export default function App() {
     setRecord(null);
     setTamperMode(false);
     setSelectedFile(null);
+    setIsAgreedVersion(false);
+    setOriginalFileName(null);
+    setOriginalFileSize(null);
+    setReplacementSource(null);
+    setIsAgreedUploadModalOpen(false);
+    setIsRiskWarningModalOpen(false);
+    setStagedAgreedFile(null);
+    setAgreedFileError(null);
     setIsAnalyzing(false);
     setAnalysisResult(null);
     setAnalysisError(null);
@@ -570,6 +702,9 @@ export default function App() {
     setFileError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+    if (agreedFileInputRef.current) {
+      agreedFileInputRef.current.value = '';
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -896,7 +1031,7 @@ export default function App() {
               ref={fileInputRef}
               onChange={handleFileInputChange}
               className="hidden"
-              accept=".pdf,.txt,application/pdf,text/plain"
+              accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/png,image/jpeg"
             />
 
             {/* Drag & drop box */}
@@ -942,7 +1077,7 @@ export default function App() {
                       Перетащите файл договора сюда или нажмите для выбора
                     </p>
                     <p className="text-xs text-slate-400">
-                      Поддерживаются PDF и TXT до 4 МБ
+                      Поддерживаются PDF, DOCX, TXT, PNG, JPG до 4 МБ
                     </p>
                   </div>
                 )}
@@ -972,7 +1107,7 @@ export default function App() {
             <div className="mt-6 space-y-3">
               <button
                 type="button"
-                onClick={startTrapCheck}
+                onClick={() => startTrapCheck()}
                 className="w-full relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2"
               >
                 <ShieldAlert className="w-5 h-5 text-slate-950" />
@@ -1059,7 +1194,7 @@ export default function App() {
                 <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
                   <button
                     type="button"
-                    onClick={startTrapCheck}
+                    onClick={() => startTrapCheck()}
                     className="px-6 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 shadow-sm"
                   >
                     <RefreshCw className="w-4 h-4" />
@@ -1100,39 +1235,89 @@ export default function App() {
             {/* SUCCESS REAL RESULT FROM GEMINI */}
             {!isAnalyzing && analysisResult && (
               <>
-                {/* 1. Верхняя карточка с общим уровнем риска */}
+                {/* 1. Верхняя карточка с общим уровнем риска и версией документа */}
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 sm:p-7 shadow-xl">
-                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300">
-                        <FileText className="w-5 h-5 text-emerald-400" />
+                  <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 shrink-0 mt-0.5">
+                        {isAgreedVersion ? (
+                          <FileCheck className="w-5 h-5 text-emerald-400" />
+                        ) : (
+                          <FileText className="w-5 h-5 text-emerald-400" />
+                        )}
                       </div>
-                      <div>
-                        <div className="text-xs text-slate-400">Проверенный документ</div>
-                        <div className="font-semibold text-white text-sm sm:text-base break-all">
-                          {selectedFile ? selectedFile.name : 'Договор'}
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="text-xs text-slate-400">Проверенный документ:</span>
+                          {/* Индикатор активной версии */}
+                          {isAgreedVersion ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Согласованная версия v2 {replacementSource === 'manual' ? '(заменена вручную)' : '(проверена повторно)'}</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+                              <FileText className="w-3.5 h-3.5 text-slate-400" />
+                              <span>Исходный черновик {analysisResult.ловушки.length > 0 ? '(найдены риски)' : '(чисто)'}</span>
+                            </span>
+                          )}
                         </div>
+
+                        <div className="font-semibold text-white text-sm sm:text-base break-all flex items-center gap-2">
+                          <span>{selectedFile ? selectedFile.name : 'Договор'}</span>
+                          {selectedFile && (
+                            <span className="text-xs text-slate-400 font-normal shrink-0">
+                              ({formatFileSize(selectedFile.size)})
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Если это согласованная замена, показываем предыдущий файл с рисками */}
+                        {isAgreedVersion && originalFileName && (
+                          <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1.5">
+                            <RefreshCw className="w-3 h-3 text-emerald-400 shrink-0" />
+                            <span>
+                              Заменил исходный черновик с рисками: <span className="text-slate-300 font-medium">{originalFileName}</span>
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    {/* Risk Badge: Red for high, Yellow for medium, Green for low */}
-                    <div>
-                      {analysisResult.общий_уровень_риска === 'высокий' ? (
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
-                          <AlertCircle className="w-4 h-4" />
-                          <span>Уровень риска: Высокий</span>
-                        </div>
-                      ) : analysisResult.общий_уровень_риска === 'средний' ? (
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25">
-                          <AlertTriangle className="w-4 h-4" />
-                          <span>Уровень риска: Средний</span>
-                        </div>
-                      ) : (
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Уровень риска: Низкий</span>
-                        </div>
-                      )}
+                    {/* Actions & Risk Badge: Red for high, Yellow for medium, Green for low */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStagedAgreedFile(null);
+                          setAgreedFileError(null);
+                          setIsAgreedUploadModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center gap-1.5 shadow-sm"
+                        title="Загрузить согласованную или исправленную версию документа"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Загрузить согласованную версию</span>
+                      </button>
+
+                      <div>
+                        {analysisResult.общий_уровень_риска === 'высокий' ? (
+                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
+                            <AlertCircle className="w-4 h-4" />
+                            <span>Уровень риска: Высокий</span>
+                          </div>
+                        ) : analysisResult.общий_уровень_риска === 'средний' ? (
+                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25">
+                            <AlertTriangle className="w-4 h-4" />
+                            <span>Уровень риска: Средний</span>
+                          </div>
+                        ) : (
+                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Уровень риска: Низкий</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1517,15 +1702,25 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 7. Внизу кнопка «Перейти к фиксации договора» */}
-                <div className="pt-2">
+                {/* 7. Внизу блок действий: «Загрузить согласованный документ» и «Перейти к фиксации договора» */}
+                <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                   <button
                     type="button"
                     onClick={() => {
-                      setCurrentStep(3);
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                      setStagedAgreedFile(null);
+                      setAgreedFileError(null);
+                      setIsAgreedUploadModalOpen(true);
                     }}
-                    className="w-full relative group overflow-hidden py-4 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2"
+                    className="sm:w-1/2 py-3.5 px-5 rounded-xl font-semibold text-xs sm:text-sm bg-[#0e141a] hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <Upload className="w-4 h-4 text-emerald-400" />
+                    <span>Загрузить согласованный документ</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleProceedToStamping}
+                    className="sm:w-1/2 relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2"
                   >
                     <Lock className="w-4 h-4 text-slate-950" />
                     <span>Перейти к фиксации договора</span>
@@ -1543,7 +1738,7 @@ export default function App() {
         {currentStep === 3 && (
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Stamping Trigger Card */}
-            <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl text-center space-y-6">
+            <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl text-center space-y-5">
               <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mx-auto shadow-[0_0_20px_rgba(16,185,129,0.15)]">
                 <Database className="w-8 h-8" />
               </div>
@@ -1552,19 +1747,65 @@ export default function App() {
                 <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
                   Фиксация цифрового отпечатка в блокчейне
                 </h2>
-                <p className="text-sm text-slate-400 max-w-md mx-auto">
+
+                {/* Индикатор статуса и версии активного файла на Шаге 3 */}
+                {selectedFile && (
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    {isAgreedVersion ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Согласованная версия v2 (заменена вручную)</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                        <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Исходный черновик {analysisResult?.ловушки?.length ? '(найдены риски)' : ''}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="text-sm text-slate-400 max-w-md mx-auto space-y-1">
                   {selectedFile ? (
                     <>
-                      Документ: <span className="text-white font-medium">{selectedFile.name}</span> ({formatFileSize(selectedFile.size)}).
-                      В блокчейн Solana devnet будет записан только SHA-256 хеш документа.
+                      <div>
+                        Документ: <span className="text-white font-medium break-all">{selectedFile.name}</span> ({formatFileSize(selectedFile.size)}).
+                      </div>
+                      {isAgreedVersion && originalFileName && (
+                        <div className="text-xs text-emerald-400/90 font-medium flex items-center justify-center gap-1.5">
+                          <RefreshCw className="w-3 h-3 text-emerald-400" />
+                          <span>Заменил исходный черновик: {originalFileName}</span>
+                        </div>
+                      )}
+                      <div className="text-xs text-slate-400">
+                        В блокчейн Solana devnet будет записан только SHA-256 хеш документа.
+                      </div>
                     </>
                   ) : (
                     <span className="text-amber-300 font-medium">
                       Файл договора ещё не выбран. Сначала загрузите документ на Шаге 1.
                     </span>
                   )}
-                </p>
+                </div>
               </div>
+
+              {/* Кнопка смены версии прямо из Шага 3 */}
+              {selectedFile && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStagedAgreedFile(null);
+                      setAgreedFileError(null);
+                      setIsAgreedUploadModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition-colors"
+                  >
+                    <Upload className="w-3 h-3 text-emerald-400" />
+                    <span>Загрузить другую согласованную версию</span>
+                  </button>
+                </div>
+              )}
 
               {/* Main Action Button */}
               <div className="pt-2">
@@ -1642,8 +1883,33 @@ export default function App() {
                       Название документа
                     </span>
                     <span className="sm:col-span-2 text-sm sm:text-base font-semibold text-white break-words">
-                      {record.fileName}
+                      {record.fileName} {record.fileSize ? `(${record.fileSize})` : ''}
                     </span>
+                  </div>
+
+                  {/* Версия документа */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
+                    <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                      Версия документа
+                    </span>
+                    <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                      {record.versionLabel?.includes('Согласованная') ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>{record.versionLabel}</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">
+                          <FileText className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Исходный черновик</span>
+                        </span>
+                      )}
+                      {record.originalFileName && (
+                        <span className="text-[11px] text-slate-400">
+                          (заменил: <span className="text-slate-300 font-mono">{record.originalFileName}</span>)
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Статус */}
@@ -1831,7 +2097,8 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       const cert = `СВИДЕТЕЛЬСТВО ФИКСАЦИИ KELISIM\n` +
-                        `Документ: ${record.fileName}\n` +
+                        `Документ: ${record.fileName}${record.fileSize ? ` (${record.fileSize})` : ''}\n` +
+                        `Версия: ${record.versionLabel || (isAgreedVersion ? 'Согласованная версия v2' : 'Исходный черновик')}${record.originalFileName ? ` (исходный черновик: ${record.originalFileName})` : ''}\n` +
                         `Статус: ${record.status}\n` +
                         `SHA-256: ${record.hash}\n` +
                         `Транзакция: ${record.signature ?? '—'}\n` +
@@ -2047,6 +2314,289 @@ export default function App() {
                 className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-medium transition-colors"
               >
                 Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1: Предупреждающий баннер / защита от случайной фиксации договора с рисками */}
+      {isRiskWarningModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0e141a] border border-amber-500/40 rounded-2xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative flex flex-col space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <ShieldAlert className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white">
+                    Внимание: договор содержит выявленные риски
+                  </h3>
+                  <div className="mt-1">
+                    <span className="inline-block text-[11px] font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                      {analysisResult?.общий_уровень_риска === 'высокий' ? 'Высокий уровень риска' : 'Средний уровень риска'} · {analysisResult?.ловушки?.length || 0} условий требует внимания
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRiskWarningModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Закрыть"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-500/20 text-xs sm:text-sm text-slate-300 leading-relaxed space-y-2">
+              <p>
+                Вы собираетесь зафиксировать в блокчейне версию, содержащую невыгодные условия или ловушки. Если контрагент уже согласился на правки, сначала загрузите согласованный вариант.
+              </p>
+              <div className="text-[11px] text-slate-400 pt-1 border-t border-amber-500/20 flex items-center justify-between">
+                <span>Текущий файл с ловушками:</span>
+                <span className="font-mono text-white font-medium truncate max-w-[220px]">
+                  {selectedFile?.name}
+                </span>
+              </div>
+            </div>
+
+            <div className="pt-2 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRiskWarningModalOpen(false);
+                  setStagedAgreedFile(null);
+                  setAgreedFileError(null);
+                  setIsAgreedUploadModalOpen(true);
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs sm:text-sm transition-all shadow-[0_0_20px_rgba(16,185,129,0.25)] flex items-center justify-center gap-2"
+              >
+                <Upload className="w-4 h-4 text-slate-950" />
+                <span>Загрузить исправленную версию</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRiskWarningModalOpen(false);
+                  setCurrentStep(3);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/70 text-xs transition-colors flex items-center justify-center gap-2"
+                title="Зафиксировать входящий черновик как доказательство разногласий"
+              >
+                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                <span>Всё равно зафиксировать эту версию (для доказательства разногласий)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Загрузка согласованного документа */}
+      {isAgreedUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0e141a] border border-slate-700/80 rounded-2xl max-w-xl w-full p-6 sm:p-7 shadow-2xl relative max-h-[90vh] flex flex-col space-y-4">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white">
+                    Загрузить согласованный документ
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Замена документа на согласованную редакцию перед фиксацией
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAgreedUploadModalOpen(false);
+                  setStagedAgreedFile(null);
+                  setAgreedFileError(null);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Закрыть"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 flex-1 overflow-y-auto pr-0.5">
+              {/* Предыдущий файл с ловушками */}
+              <div className="p-3.5 rounded-xl bg-[#090d10] border border-slate-800 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-slate-400">Предыдущая версия (с ловушками):</div>
+                    <div className="font-semibold text-slate-200 truncate">
+                      {originalFileName || selectedFile?.name || 'Исходный черновик'}
+                    </div>
+                  </div>
+                </div>
+                <span className="shrink-0 text-[10px] font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                  {analysisResult?.ловушки?.length ? `${analysisResult.ловушки.length} ловушек` : 'Риски'}
+                </span>
+              </div>
+
+              {/* Error banner if file invalid */}
+              {agreedFileError && (
+                <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
+                  <span>{agreedFileError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAgreedFileError(null)}
+                    className="text-rose-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* Hidden file input */}
+              <input
+                type="file"
+                ref={agreedFileInputRef}
+                onChange={handleAgreedFileInputChange}
+                className="hidden"
+                accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/png,image/jpeg"
+              />
+
+              {/* Dropzone for the new file */}
+              {!stagedAgreedFile ? (
+                <div
+                  onDragOver={handleAgreedDragOver}
+                  onDragLeave={handleAgreedDragLeave}
+                  onDrop={handleAgreedDrop}
+                  onClick={() => agreedFileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-xl p-6 sm:p-8 text-center cursor-pointer transition-all ${
+                    isAgreedDragging
+                      ? 'border-emerald-500 bg-emerald-500/10 scale-[0.99]'
+                      : 'border-slate-700/80 hover:border-emerald-500/60 bg-slate-900/40 hover:bg-slate-900/70'
+                  }`}
+                >
+                  <div className="flex flex-col items-center">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
+                      <Upload className="w-6 h-6" />
+                    </div>
+                    <p className="font-semibold text-white text-sm sm:text-base">
+                      Перетащите согласованный с контрагентом документ сюда
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      или нажмите для выбора файла на устройстве
+                    </p>
+                    <p className="text-[11px] text-emerald-400/80 mt-2">
+                      Поддерживаются PDF, DOCX, TXT, PNG, JPG до 4 МБ
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-300 shrink-0">
+                      <FileCheck className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                          Выбран новый согласованный файл:
+                        </span>
+                      </div>
+                      <div className="font-semibold text-white text-sm truncate">
+                        {stagedAgreedFile.name}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {formatFileSize(stagedAgreedFile.size)} · Готов к обработке
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStagedAgreedFile(null);
+                      if (agreedFileInputRef.current) agreedFileInputRef.current.value = '';
+                    }}
+                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-700 transition-colors"
+                  >
+                    Заменить
+                  </button>
+                </div>
+              )}
+
+              {/* 2 Scenario choices once file is chosen */}
+              {stagedAgreedFile && (
+                <div className="space-y-3 pt-2">
+                  <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                    Выберите дальнейшее действие:
+                  </div>
+
+                  {/* Вариант А: Быстрая повторная экспресс-проверка */}
+                  <button
+                    type="button"
+                    onClick={() => handleApplyAgreedFile('recheck')}
+                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/40 hover:border-emerald-400 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99]"
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5 group-hover:scale-105 transition-transform">
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div className="space-y-1 flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white text-xs sm:text-sm">
+                          Вариант А: Быстрая повторная экспресс-проверка
+                        </span>
+                        <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                          Рекомендуется
+                        </span>
+                      </div>
+                      <p className="text-[11px] sm:text-xs text-slate-400 leading-relaxed">
+                        Перезапустить анализ для нового файла, чтобы убедиться, что контрагент действительно убрал все ловушки.
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Вариант Б: Перейти сразу к фиксации */}
+                  <button
+                    type="button"
+                    onClick={() => handleApplyAgreedFile('direct_stamp')}
+                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99]"
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 shrink-0 mt-0.5 group-hover:text-emerald-400 transition-colors">
+                      <Lock className="w-4 h-4" />
+                    </div>
+                    <div className="space-y-1 flex-1">
+                      <div className="font-bold text-white text-xs sm:text-sm">
+                        Вариант Б: Перейти сразу к фиксации
+                      </div>
+                      <p className="text-[11px] sm:text-xs text-slate-400 leading-relaxed">
+                        Обновить текущий файл на новый согласованный и сразу перейти на Шаг 3 (фиксация в Solana Devnet).
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Bottom buttons */}
+            <div className="pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAgreedUploadModalOpen(false);
+                  setStagedAgreedFile(null);
+                  setAgreedFileError(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-medium transition-colors"
+              >
+                Отмена
               </button>
             </div>
           </div>
