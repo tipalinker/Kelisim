@@ -1,0 +1,6 @@
+{
+  "name": "Kelisim — Фиксация договоров",
+  "description": "Сервис фиксации неизменяемого цифрового отпечатка договоров для предпринимателей Казахстана.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
