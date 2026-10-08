@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import shieldLogoImg from '../assets/images/kelisim_shield_logo_1791437995809.jpg';
 
 interface KelisimLogoProps {
   size?: 'sm' | 'md' | 'lg';
@@ -13,6 +14,9 @@ export const KelisimLogo: React.FC<KelisimLogoProps> = ({
   className = '',
   onClick,
 }) => {
+  const [imageFailed, setImageFailed] = useState(false);
+  const [currentSrc, setCurrentSrc] = useState(shieldLogoImg);
+
   const iconDimensions = {
     sm: 'w-8 h-8',
     md: 'w-10 h-10 sm:w-11 sm:h-11',
@@ -31,6 +35,17 @@ export const KelisimLogo: React.FC<KelisimLogoProps> = ({
     lg: 'text-[11px] sm:text-[12px] tracking-[0.2em]',
   }[size];
 
+  const handleImageError = () => {
+    // If bundled import fails, try public /logo.jpg, then /kelisim_shield_logo_1791437995809.jpg, then fallback SVG
+    if (currentSrc !== '/logo.jpg' && currentSrc !== '/kelisim_shield_logo_1791437995809.jpg') {
+      setCurrentSrc('/logo.jpg');
+    } else if (currentSrc === '/logo.jpg') {
+      setCurrentSrc('/kelisim_shield_logo_1791437995809.jpg');
+    } else {
+      setImageFailed(true);
+    }
+  };
+
   return (
     <div
       onClick={onClick}
@@ -42,12 +57,22 @@ export const KelisimLogo: React.FC<KelisimLogoProps> = ({
         <div className="absolute -inset-1 rounded-2xl bg-gradient-to-tr from-emerald-500/20 via-teal-400/25 to-cyan-500/20 blur-md opacity-75 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
         
         <div className={`relative ${iconDimensions} rounded-xl overflow-hidden bg-[#0c1217] border border-emerald-500/40 p-0.5 shadow-[0_0_20px_rgba(16,185,129,0.2)] group-hover:border-emerald-400 group-hover:shadow-[0_0_25px_rgba(45,212,191,0.35)] transition-all duration-300 flex items-center justify-center`}>
-          <img
-            src="/src/assets/images/kelisim_shield_logo_1791437995809.jpg"
-            alt="Kelisim Logo"
-            className="w-full h-full object-cover rounded-lg transform scale-105 group-hover:scale-110 transition-transform duration-300"
-            referrerPolicy="no-referrer"
-          />
+          {!imageFailed ? (
+            <img
+              src={currentSrc}
+              alt="Kelisim Logo"
+              onError={handleImageError}
+              className="w-full h-full object-cover rounded-lg transform scale-105 group-hover:scale-110 transition-transform duration-300"
+              loading="eager"
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-emerald-950 via-[#0c171e] to-teal-950 flex items-center justify-center rounded-lg text-emerald-400">
+              <svg className="w-3/4 h-3/4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(16, 185, 129, 0.2)" />
+                <path d="m9 12 2 2 4-4" stroke="currentColor" strokeWidth="2.5" />
+              </svg>
+            </div>
+          )}
         </div>
       </div>
 

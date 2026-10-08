@@ -74,7 +74,10 @@
 
 ---
 
-## Team
+## Team / Команда
 
 - **Rasim Musayev** — Founder & Lead Developer (`rasimmusaev2007@gmail.com`)
-- **Kelisim Core Team**
+- **Fatima Panabek** — Универсал
+- **Багдан Орынбасар** — Универсал
+- **Алишер Балгалий** — Универсал
+- **Нуржигит Кайратулы** — Универсал

@@ -24,7 +24,6 @@ import {
   ChevronUp, 
   X, 
   ArrowRight, 
-  ArrowLeft, 
   Sparkles, 
   Info, 
   Coins, 
@@ -35,9 +34,14 @@ import {
   LogOut,
   RefreshCw,
   Database,
-  History
+  History,
+  FileSearch,
+  Calculator
 } from 'lucide-react';
-import { MOCK_TRAP_ANALYSIS, RiskTrapItem } from './data/contractTrapData';
+import { 
+  GeminiContractAnalysis, 
+  TrapItem 
+} from './data/contractTrapData';
 import { KelisimLogo } from './components/KelisimLogo';
 import { 
   getPhantomProvider, 
@@ -63,13 +67,53 @@ interface StampedRecord {
   explorerUrl?: string;
 }
 
-const DEFAULT_SAMPLE_NAME = 'Договор аренды помещения №12';
+const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4 MB
 
-// Helper to format bytes
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' байт';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
   return (bytes / (1024 * 1024)).toFixed(2) + ' МБ';
+}
+
+function formatTenge(amount: number): string {
+  return new Intl.NumberFormat('ru-RU').format(Math.round(amount)) + ' ₸';
+}
+
+function formatTrapsHeadline(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod100 >= 11 && mod100 <= 14) {
+    return `Найдено ${count} условий, на которые стоит обратить внимание`;
+  }
+  if (mod10 === 1) {
+    return `Найдено ${count} условие, на которое стоит обратить внимание`;
+  }
+  if (mod10 >= 2 && mod10 <= 4) {
+    return `Найдено ${count} условия, на которые стоит обратить внимание`;
+  }
+  return `Найдено ${count} условий, на которые стоит обратить внимание`;
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (err) => reject(err);
+    reader.readAsText(file, 'UTF-8');
+  });
 }
 
 export default function App() {
@@ -78,17 +122,24 @@ export default function App() {
 
   // File state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isSampleSelected, setIsSampleSelected] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [fileError, setFileError] = useState<string | null>(null);
 
-  // Step 2: Trap analysis state
+  // Step 2: Trap analysis state (ONLY populated by real Gemini response)
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
-  const [analysisComplete, setAnalysisComplete] = useState<boolean>(false);
-  const [expandedTraps, setExpandedTraps] = useState<Record<string, boolean>>({
-    'trap-2': true,
-    'trap-3': true,
-  });
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<GeminiContractAnalysis | null>(null);
+  const [expandedTraps, setExpandedTraps] = useState<Record<number, boolean>>({});
+
+  // Calculation overrides / user inputs for missing contract numbers
+  const [customMonthlyPayment, setCustomMonthlyPayment] = useState<string>('');
+  const [customPenaltyPercent, setCustomPenaltyPercent] = useState<string>('');
+  const [customPenaltyDays, setCustomPenaltyDays] = useState<number>(30);
+
+  // Step 2 Letter generation state
+  const [isGeneratingLetter, setIsGeneratingLetter] = useState<boolean>(false);
+  const [letterError, setLetterError] = useState<string | null>(null);
+  const [letterText, setLetterText] = useState<string>('');
   const [isLetterModalOpen, setIsLetterModalOpen] = useState<boolean>(false);
   const [copiedLetter, setCopiedLetter] = useState<boolean>(false);
 
@@ -129,9 +180,46 @@ export default function App() {
     }
   }, [blockchainRecords]);
 
-  // Document display name
-  const currentDocName = selectedFile ? selectedFile.name : (isSampleSelected ? DEFAULT_SAMPLE_NAME : 'Договор не выбран');
-  const currentDocSize = selectedFile ? formatFileSize(selectedFile.size) : '';
+  // Synchronize initial numbers for code-based calculations when analysis arrives
+  useEffect(() => {
+    if (analysisResult?.числа) {
+      if (analysisResult.числа.ежемесячный_платёж != null) {
+        setCustomMonthlyPayment(String(analysisResult.числа.ежемесячный_платёж));
+      }
+      if (analysisResult.числа.процент_штрафа_в_день != null) {
+        setCustomPenaltyPercent(String(analysisResult.числа.процент_штрафа_в_день));
+      }
+    }
+  }, [analysisResult]);
+
+  // Validate file
+  const validateAndSetFile = (file: File) => {
+    setFileError(null);
+    setAnalysisError(null);
+    setAnalysisResult(null);
+    setLetterText('');
+
+    const lowerName = file.name.toLowerCase();
+    const isPdf = lowerName.endsWith('.pdf') || file.type === 'application/pdf';
+    const isTxt = lowerName.endsWith('.txt') || file.type === 'text/plain';
+
+    if (!isPdf && !isTxt) {
+      setFileError('Неподдерживаемый формат файла. Разрешены только файлы PDF и TXT.');
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return false;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      setFileError('Файл превышает допустимый размер (до 4 МБ). Пожалуйста, выберите файл меньшего размера.');
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return false;
+    }
+
+    setSelectedFile(file);
+    return true;
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -147,73 +235,135 @@ export default function App() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setSelectedFile(e.dataTransfer.files[0]);
-      setIsSampleSelected(false);
-      setFileError(null);
-      setTxError(null);
+      validateAndSetFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setSelectedFile(e.target.files[0]);
-      setIsSampleSelected(false);
-      setFileError(null);
-      setTxError(null);
+      validateAndSetFile(e.target.files[0]);
     }
   };
 
-  // Quick sample contract generation as real File
-  const useSampleContract = () => {
-    const sampleText = `ДОГОВОР АРЕНДЫ НЕЖИЛОГО ПОМЕЩЕНИЯ №12\nг. Актобе, Республика Казахстан\n1. Предмет договора: Аренда нежилого помещения общей площадью 85 кв.м по адресу: г. Актобе, пр. Абилкайыр хана, 42.\n2. Срок аренды: 12 месяцев с даты подписания.\n3. Стороны договора: ИП «Арендодатель» и ТОО «Арендатор».\n`;
-    const sampleBlob = new Blob([sampleText], { type: 'application/pdf' });
-    const file = new File([sampleBlob], 'Договор аренды помещения №12.pdf', { type: 'application/pdf' });
-    setSelectedFile(file);
-    setIsSampleSelected(true);
-    setFileError(null);
-    setTxError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  // Step 2 trigger with 1.5s analysis animation
-  const startTrapCheck = () => {
+  // Step 1: Real AI Trap Check via /api/analyze
+  const startTrapCheck = async () => {
     if (!selectedFile) {
       setFileError('Сначала загрузите договор');
       return;
     }
+
     setFileError(null);
+    setAnalysisError(null);
     setCurrentStep(2);
     setIsAnalyzing(true);
-    setAnalysisComplete(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    setTimeout(() => {
+    try {
+      const isPdf = selectedFile.name.toLowerCase().endsWith('.pdf') || selectedFile.type === 'application/pdf';
+      let fileBase64 = '';
+      let fileText = '';
+
+      if (isPdf) {
+        fileBase64 = await readFileAsBase64(selectedFile);
+      } else {
+        fileText = await readFileAsText(selectedFile);
+        fileBase64 = await readFileAsBase64(selectedFile);
+      }
+
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'check_traps',
+          fileName: selectedFile.name,
+          mimeType: selectedFile.type || (isPdf ? 'application/pdf' : 'text/plain'),
+          fileBase64,
+          fileText,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        const errorMsg = data.error || 'Не удалось проанализировать договор. Попробуйте повторить запрос.';
+        setAnalysisError(errorMsg);
+        setIsAnalyzing(false);
+        return;
+      }
+
+      setAnalysisResult(data);
+      // Expand first 2 traps by default
+      setExpandedTraps({ 0: true, 1: true });
+    } catch (err: any) {
+      console.error('Trap check error:', err);
+      setAnalysisError(err?.message || 'Ошибка связи с сервером анализа. Проверьте интернет-соединение и повторите попытку.');
+    } finally {
       setIsAnalyzing(false);
-      setAnalysisComplete(true);
-    }, 1500);
+    }
+  };
+
+  // Step 2: Real Counterpart Letter generation via /api/analyze
+  const handleGenerateLetter = async () => {
+    if (!analysisResult?.ловушки || analysisResult.ловушки.length === 0) {
+      return;
+    }
+
+    setIsGeneratingLetter(true);
+    setLetterError(null);
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'generate_letter',
+          contractType: analysisResult.тип_договора,
+          parties: analysisResult.стороны,
+          traps: analysisResult.ловушки,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        setLetterError(data.error || 'Не удалось подготовить письмо. Пожалуйста, повторите.');
+        return;
+      }
+
+      setLetterText(data.letter || '');
+      setIsLetterModalOpen(true);
+    } catch (err: any) {
+      console.error('Letter generation error:', err);
+      setLetterError('Ошибка связи с сервером при подготовке письма. Повторите попытку.');
+    } finally {
+      setIsGeneratingLetter(false);
+    }
   };
 
   // Toggle single trap card
-  const toggleTrap = (id: string) => {
+  const toggleTrap = (index: number) => {
     setExpandedTraps(prev => ({
       ...prev,
-      [id]: !prev[id],
+      [index]: !prev[index],
     }));
   };
 
   // Expand / collapse all traps
   const toggleAllTraps = () => {
-    const allIds = MOCK_TRAP_ANALYSIS.traps.map(t => t.id);
-    const areAllOpen = allIds.every(id => expandedTraps[id]);
+    if (!analysisResult?.ловушки) return;
+    const allCount = analysisResult.ловушки.length;
+    const areAllOpen = Object.keys(expandedTraps).length === allCount;
     if (areAllOpen) {
       setExpandedTraps({});
     } else {
-      const next: Record<string, boolean> = {};
-      allIds.forEach(id => {
-        next[id] = true;
-      });
+      const next: Record<number, boolean> = {};
+      for (let i = 0; i < allCount; i++) {
+        next[i] = true;
+      }
       setExpandedTraps(next);
     }
   };
@@ -236,7 +386,6 @@ export default function App() {
       const pubKey = resp.publicKey.toString();
       setWalletAddress(pubKey);
 
-      // Fetch devnet balance via @solana/web3.js
       const balance = await getDevnetBalance(pubKey);
       setWalletBalance(balance);
       return true;
@@ -308,12 +457,11 @@ export default function App() {
     }
   }, []);
 
-  // Step 3: REAL Transaction to Solana Devnet via Phantom
+  // Step 3: Real Transaction to Solana Devnet via Phantom
   const handleStamp = async () => {
     setTxError(null);
     setFileError(null);
 
-    // 1. Check if contract file is loaded
     if (!selectedFile) {
       setFileError('Сначала загрузите договор');
       setCurrentStep(1);
@@ -321,7 +469,6 @@ export default function App() {
       return;
     }
 
-    // 2. Check if Phantom wallet is connected
     let provider = getPhantomProvider();
     if (!provider) {
       setPhantomNotFound(true);
@@ -346,12 +493,7 @@ export default function App() {
     setIsProcessingStamp(true);
 
     try {
-      // 3. Compute SHA-256 directly in browser (crypto.subtle.digest) from user's file
       const fileHash = await calculateFileSha256(selectedFile);
-
-      // 4. Send Memo transaction to Solana devnet with user's wallet as fee payer
-      // Instruction program: MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
-      // Text: Kelisim v1 | sha256:<fileHash> encoded via TextEncoder (no Buffer)
       const { signature, memoText } = await sendKelisimMemoTransaction(provider, fileHash);
 
       const now = new Date();
@@ -368,10 +510,8 @@ export default function App() {
       const currentPubkey = provider.publicKey.toString();
       const explorerUrl = `https://explorer.solana.com/tx/${signature}?cluster=devnet`;
 
-      // Update devnet balance
       getDevnetBalance(currentPubkey).then(setWalletBalance);
 
-      // Create new blockchain history record
       const newRecord: BlockchainRecord = {
         id: signature,
         signature,
@@ -384,7 +524,10 @@ export default function App() {
 
       setBlockchainRecords(prev => [newRecord, ...prev.filter(r => r.signature !== signature)]);
 
-      // Display result card
+      const detectedParties = analysisResult?.стороны && analysisResult.стороны.length >= 2
+        ? `Стороны: ${analysisResult.стороны[0]} и ${analysisResult.стороны[1]}`
+        : `Сторона А: подтвердила (${formatAddress(currentPubkey)})`;
+
       setRecord({
         fileName: selectedFile.name,
         fileSize: formatFileSize(selectedFile.size),
@@ -392,7 +535,7 @@ export default function App() {
         timestamp: formattedDate,
         network: 'Solana (devnet)',
         status: 'Зафиксирован',
-        partyA: `Сторона А: подтвердила (${formatAddress(currentPubkey)})`,
+        partyA: detectedParties,
         partyB: 'Сторона Б: подтвердила',
         explanation: 'Если в документе изменить даже одну запятую, отпечаток не совпадёт',
         signature,
@@ -419,9 +562,10 @@ export default function App() {
     setRecord(null);
     setTamperMode(false);
     setSelectedFile(null);
-    setIsSampleSelected(false);
     setIsAnalyzing(false);
-    setAnalysisComplete(false);
+    setAnalysisResult(null);
+    setAnalysisError(null);
+    setLetterText('');
     setTxError(null);
     setFileError(null);
     if (fileInputRef.current) {
@@ -429,6 +573,21 @@ export default function App() {
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
+
+  // Calculations in Tenge performed purely by website code
+  const numbers = analysisResult?.числа;
+  const currentPayment = customMonthlyPayment !== '' ? parseFloat(customMonthlyPayment) : (numbers?.ежемесячный_платёж ?? null);
+  const currentPenaltyRate = customPenaltyPercent !== '' ? parseFloat(customPenaltyPercent) : (numbers?.процент_штрафа_в_день ?? null);
+  const currentDeposit = numbers?.залог ?? null;
+  const currentMonths = numbers?.срок_договора_месяцев ?? null;
+
+  // Scenario 1: Penalty calculation
+  const hasPenaltyParams = currentPayment != null && !isNaN(currentPayment) && currentPenaltyRate != null && !isNaN(currentPenaltyRate);
+  const calculatedPenalty = hasPenaltyParams ? (currentPenaltyRate / 100) * currentPayment * customPenaltyDays : null;
+
+  // Scenario 3: Total contract obligation calculation
+  const hasObligationParams = currentPayment != null && !isNaN(currentPayment) && currentMonths != null && !isNaN(currentMonths);
+  const calculatedObligation = hasObligationParams ? currentPayment * currentMonths : null;
 
   return (
     <div className="min-h-screen bg-[#090d10] text-slate-100 flex flex-col justify-between selection:bg-emerald-500/25 selection:text-emerald-300">
@@ -451,7 +610,7 @@ export default function App() {
           <div className="relative">
             {walletAddress ? (
               <div className="flex items-center gap-2">
-                {/* Balance in SOL on Devnet via @solana/web3.js */}
+                {/* Balance in SOL on Devnet */}
                 <div 
                   className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-xs font-mono font-medium shadow-sm"
                   title="Баланс кошелька в сети Solana Devnet"
@@ -461,7 +620,7 @@ export default function App() {
                   <span className="text-[10px] text-slate-400 font-sans">devnet</span>
                 </div>
 
-                {/* Address Button: First 4 and Last 4 characters */}
+                {/* Address Button */}
                 <button
                   type="button"
                   onClick={() => setIsWalletMenuOpen(!isWalletMenuOpen)}
@@ -476,13 +635,11 @@ export default function App() {
                 {/* Dropdown Menu */}
                 {isWalletMenuOpen && (
                   <>
-                    {/* Click outside overlay */}
                     <div 
                       className="fixed inset-0 z-40 bg-black/20" 
                       onClick={() => setIsWalletMenuOpen(false)} 
                     />
 
-                    {/* Dropdown Card */}
                     <div className="absolute right-0 top-full mt-2 w-72 sm:w-80 bg-[#0e141a] border border-slate-700/90 rounded-2xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.95)] z-50 animate-in fade-in zoom-in-95 duration-150 text-xs">
                       <div className="pb-3 border-b border-slate-800">
                         <div className="text-[11px] text-slate-400 flex items-center justify-between">
@@ -642,7 +799,7 @@ export default function App() {
           </div>
         )}
 
-        {/* File Missing Error Banner */}
+        {/* File Validation Error Banner */}
         {fileError && (
           <div className="mb-6 p-4 rounded-xl bg-amber-950/30 border border-amber-500/30 text-xs sm:text-sm text-amber-200 flex items-center justify-between gap-3 animate-in fade-in duration-200">
             <div className="flex items-center gap-2.5">
@@ -689,7 +846,7 @@ export default function App() {
                   setCurrentStep(1);
                   return;
                 }
-                if (!analysisComplete && !isAnalyzing) {
+                if (!analysisResult && !isAnalyzing) {
                   startTrapCheck();
                 } else {
                   setCurrentStep(2);
@@ -739,7 +896,7 @@ export default function App() {
               ref={fileInputRef}
               onChange={handleFileInputChange}
               className="hidden"
-              accept=".pdf,.docx,.doc,.txt,.png,.jpg,.jpeg"
+              accept=".pdf,.txt,application/pdf,text/plain"
             />
 
             {/* Drag & drop box */}
@@ -773,7 +930,7 @@ export default function App() {
                       {selectedFile.name}
                     </p>
                     <p className="text-xs text-slate-400">
-                      Размер: {formatFileSize(selectedFile.size)} · Готов к фиксации
+                      Размер: {formatFileSize(selectedFile.size)} · Готов к проверке
                     </p>
                     <p className="text-xs text-emerald-400 pt-1">
                       Нажмите, чтобы заменить файл
@@ -785,45 +942,31 @@ export default function App() {
                       Перетащите файл договора сюда или нажмите для выбора
                     </p>
                     <p className="text-xs text-slate-400">
-                      Поддерживаются PDF, DOCX, TXT и сканы документов до 50 МБ
+                      Поддерживаются PDF и TXT до 4 МБ
                     </p>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Quick sample toggle or actions */}
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-              <div className="flex items-center gap-2">
-                <span>Быстрый выбор:</span>
-                <button
-                  type="button"
-                  onClick={useSampleContract}
-                  className={`px-2.5 py-1 rounded-lg border transition-colors ${
-                    isSampleSelected && selectedFile
-                      ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
-                      : 'border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
-                  }`}
-                >
-                  Договор аренды №12
-                </button>
-              </div>
-
-              {selectedFile && (
+            {/* Clear file button if selected */}
+            {selectedFile && (
+              <div className="mt-3 flex justify-end">
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     setSelectedFile(null);
-                    setIsSampleSelected(false);
+                    setAnalysisResult(null);
+                    setFileError(null);
                     if (fileInputRef.current) fileInputRef.current.value = '';
                   }}
-                  className="text-slate-400 hover:text-rose-300 underline underline-offset-2"
+                  className="text-xs text-slate-400 hover:text-rose-300 underline underline-offset-2 transition-colors"
                 >
                   Удалить файл
                 </button>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Action Buttons for Step 1 */}
             <div className="mt-6 space-y-3">
@@ -862,7 +1005,8 @@ export default function App() {
         {/* ========================================================= */}
         {currentStep === 2 && (
           <div className="space-y-6 animate-in fade-in duration-300">
-            {isAnalyzing ? (
+            {/* Loading state: Анализируем договор… */}
+            {isAnalyzing && (
               <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-10 sm:p-14 text-center shadow-xl space-y-6">
                 <div className="relative w-16 h-16 mx-auto">
                   <div className="absolute inset-0 rounded-full border-4 border-slate-800" />
@@ -874,31 +1018,89 @@ export default function App() {
 
                 <div className="space-y-2">
                   <h3 className="text-xl font-bold text-white tracking-tight">
-                    Анализируем договор...
+                    Анализируем договор…
                   </h3>
                   <p className="text-sm text-slate-400 max-w-sm mx-auto">
-                    Проверяем скрытые штрафы, односторонние условия, дисбаланс прав и спорные формулировки.
+                    ИИ читает документ и ищет невыгодные условия, неравные штрафы, автопродление и скрытые платежи.
                   </p>
                 </div>
 
-                <div className="max-w-xs mx-auto space-y-1.5 text-left text-xs text-slate-400">
+                <div className="max-w-xs mx-auto space-y-2 text-left text-xs text-slate-400">
                   <div className="flex items-center gap-2">
                     <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Сканирование структуры пунктов</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Поиск кабальных неустоек и штрафов</span>
+                    <span>Чтение пунктов и условий договора</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="w-3.5 h-3.5 border-2 border-emerald-400/40 border-t-emerald-400 rounded-full animate-spin" />
-                    <span className="text-slate-200">Подсчёт потенциальных финансовых потерь</span>
+                    <span className="text-slate-200">Поиск юридических и финансовых ловушек</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Формирование простых объяснений и рекомендаций</span>
                   </div>
                 </div>
               </div>
-            ) : (
+            )}
+
+            {/* Error state with retry button */}
+            {!isAnalyzing && analysisError && (
+              <div className="bg-[#0f141a] border border-rose-500/30 rounded-2xl p-8 text-center shadow-xl space-y-5">
+                <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto">
+                  <AlertTriangle className="w-7 h-7" />
+                </div>
+                <div className="space-y-2 max-w-md mx-auto">
+                  <h3 className="text-lg font-bold text-white">
+                    Не удалось завершить анализ
+                  </h3>
+                  <p className="text-xs sm:text-sm text-rose-200/90 leading-relaxed">
+                    {analysisError}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={startTrapCheck}
+                    className="px-6 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 shadow-sm"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Повторить</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep(1)}
+                    className="px-5 py-2.5 rounded-xl text-xs sm:text-sm bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+                  >
+                    Выбрать другой файл
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* If not analyzed yet and no error */}
+            {!isAnalyzing && !analysisError && !analysisResult && (
+              <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-10 text-center shadow-xl space-y-4">
+                <FileSearch className="w-12 h-12 text-slate-600 mx-auto" />
+                <h3 className="text-lg font-bold text-white">
+                  Анализ договора не запущен
+                </h3>
+                <p className="text-xs text-slate-400 max-w-md mx-auto">
+                  Загрузите договор на Шаге 1 и нажмите кнопку «Проверить на ловушки». Все результаты появятся только из реального анализа вашего документа.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(1)}
+                  className="px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all inline-flex items-center gap-2"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Перейти к загрузке</span>
+                </button>
+              </div>
+            )}
+
+            {/* SUCCESS REAL RESULT FROM GEMINI */}
+            {!isAnalyzing && analysisResult && (
               <>
-                {/* 1. Верхняя карточка с общим выводом */}
+                {/* 1. Верхняя карточка с общим уровнем риска */}
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 sm:p-7 shadow-xl">
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <div className="flex items-center gap-3">
@@ -907,266 +1109,413 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-xs text-slate-400">Проверенный документ</div>
-                        <div className="font-semibold text-white text-sm sm:text-base">
-                          {currentDocName}
+                        <div className="font-semibold text-white text-sm sm:text-base break-all">
+                          {selectedFile ? selectedFile.name : 'Договор'}
                         </div>
                       </div>
                     </div>
 
-                    <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
-                      <AlertCircle className="w-4 h-4" />
-                      <span>Уровень риска: Высокий</span>
+                    {/* Risk Badge: Red for high, Yellow for medium, Green for low */}
+                    <div>
+                      {analysisResult.общий_уровень_риска === 'высокий' ? (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
+                          <AlertCircle className="w-4 h-4" />
+                          <span>Уровень риска: Высокий</span>
+                        </div>
+                      ) : analysisResult.общий_уровень_риска === 'средний' ? (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25">
+                          <AlertTriangle className="w-4 h-4" />
+                          <span>Уровень риска: Средний</span>
+                        </div>
+                      ) : (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Уровень риска: Низкий</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
                   <div className="pt-2 pb-3">
                     <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                      {MOCK_TRAP_ANALYSIS.headline}
+                      {formatTrapsHeadline(analysisResult.ловушки.length)}
                     </h2>
+                    {(analysisResult.тип_договора || (analysisResult.стороны && analysisResult.стороны.length > 0)) && (
+                      <p className="text-xs text-slate-400 mt-1">
+                        {analysisResult.тип_договора && <span className="text-slate-300 font-medium">Тип: {analysisResult.тип_договора}</span>}
+                        {analysisResult.стороны && analysisResult.стороны.length > 0 && (
+                          <span className="ml-2">· Стороны: {analysisResult.стороны.join(' и ')}</span>
+                        )}
+                      </p>
+                    )}
                   </div>
 
                   <div className="pt-3 border-t border-slate-800/80 flex items-start gap-2 text-xs text-slate-400">
                     <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
                     <p className="leading-relaxed">
-                      {MOCK_TRAP_ANALYSIS.disclaimer}
+                      Предварительная проверка, не юридическая консультация. Выявленные пункты рекомендуется обсудить с контрагентом или юристом.
                     </p>
                   </div>
                 </div>
 
-                {/* 3. Блок «Сколько это может стоить» */}
-                <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-                    <div>
-                      <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider">
-                        <Coins className="w-4 h-4 text-emerald-400" />
-                        <span>Сколько это может стоить</span>
-                      </div>
-                      <div className="text-2xl sm:text-3xl font-extrabold text-white mt-1">
-                        {MOCK_TRAP_ANALYSIS.financialLosses.totalEstimated}
-                      </div>
+                {/* 2. Блок «Расчёты в тенге» (выполняются кодом на сайте по извлечённым числам) */}
+                <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider">
+                      <Calculator className="w-4 h-4 text-emerald-400" />
+                      <span>Расчёты в тенге (по условиям договора)</span>
                     </div>
-                    <div className="text-xs text-slate-400 self-start sm:self-center">
-                      ({MOCK_TRAP_ANALYSIS.financialLosses.note})
-                    </div>
+                    <span className="text-[11px] text-slate-500">
+                      Раздельные сценарии с допущениями
+                    </span>
                   </div>
 
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                    {MOCK_TRAP_ANALYSIS.financialLosses.breakdown.map((item, idx) => (
-                      <div 
-                        key={idx} 
-                        className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between gap-2"
-                      >
-                        <div className="truncate">
-                          <span className="text-slate-400 font-mono text-[11px] mr-1.5">{item.clause}</span>
-                          <span className="text-slate-300">{item.title}</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    {/* Сценарий 1: Просрочка оплаты и пеня */}
+                    <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2 flex flex-col justify-between">
+                      <div>
+                        <div className="font-semibold text-white text-xs mb-1">
+                          Сценарий 1: Неустойка (пеня) при задержке оплаты
                         </div>
-                        <span className="font-semibold text-rose-300 shrink-0 ml-1">{item.amount}</span>
+                        <div className="text-[11px] text-slate-400 mb-2">
+                          Допущение: просрочка оплаты на {customPenaltyDays} дней
+                        </div>
+
+                        {hasPenaltyParams && calculatedPenalty != null ? (
+                          <div className="space-y-1">
+                            <div className="font-mono text-emerald-300 text-xs sm:text-sm font-semibold bg-[#090d10] p-2 rounded-lg border border-slate-800 break-words">
+                              {currentPenaltyRate}% × {formatTenge(currentPayment!)} × {customPenaltyDays} дн. = {formatTenge(calculatedPenalty)}
+                            </div>
+                            <div className="text-[11px] text-rose-300">
+                              Потенциальная пеня: {formatTenge(calculatedPenalty)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="text-amber-300 text-[11px] bg-amber-950/20 p-2 rounded-lg border border-amber-500/20">
+                              Не удалось определить: в договоре не найден точный ежемесячный платёж или дневной процент пени.
+                            </div>
+                            <div className="space-y-1.5 pt-1">
+                              <span className="text-[11px] text-slate-400">Введите значения для расчёта:</span>
+                              <div className="flex gap-2">
+                                <input
+                                  type="number"
+                                  placeholder="Платёж, ₸"
+                                  value={customMonthlyPayment}
+                                  onChange={(e) => setCustomMonthlyPayment(e.target.value)}
+                                  className="w-1/2 p-1.5 rounded-lg bg-[#080c0f] border border-slate-700 text-white text-xs font-mono"
+                                />
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  placeholder="% в день"
+                                  value={customPenaltyPercent}
+                                  onChange={(e) => setCustomPenaltyPercent(e.target.value)}
+                                  className="w-1/2 p-1.5 rounded-lg bg-[#080c0f] border border-slate-700 text-white text-xs font-mono"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    ))}
+                    </div>
+
+                    {/* Сценарий 2: Обеспечительный платёж (залог) */}
+                    <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2 flex flex-col justify-between">
+                      <div>
+                        <div className="font-semibold text-white text-xs mb-1">
+                          Сценарий 2: Обеспечительный платёж (залог)
+                        </div>
+                        <div className="text-[11px] text-slate-400 mb-2">
+                          Допущение: риск невозврата при досрочном прекращении
+                        </div>
+
+                        {currentDeposit != null ? (
+                          <div className="space-y-1">
+                            <div className="font-mono text-emerald-300 text-xs sm:text-sm font-semibold bg-[#090d10] p-2 rounded-lg border border-slate-800">
+                              Залог = {formatTenge(currentDeposit)}
+                            </div>
+                            <div className="text-[11px] text-slate-300">
+                              Сумма обеспечительного платежа, замораживаемая по договору
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-slate-400 text-[11px] bg-[#090d10] p-2 rounded-lg border border-slate-800">
+                            Сумма залога в договоре не зафиксирована (null)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Сценарий 3: Обязательства за весь срок */}
+                    <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2 sm:col-span-2">
+                      <div className="font-semibold text-white text-xs mb-1">
+                        Сценарий 3: Базовые обязательства за весь срок действия договора
+                      </div>
+                      <div className="text-[11px] text-slate-400 mb-2">
+                        Допущение: оплата базовой ставки за полный срок без индексаций
+                      </div>
+
+                      {hasObligationParams && calculatedObligation != null ? (
+                        <div className="font-mono text-emerald-300 text-xs sm:text-sm font-semibold bg-[#090d10] p-2.5 rounded-lg border border-slate-800">
+                          {currentMonths} мес. × {formatTenge(currentPayment!)} = {formatTenge(calculatedObligation)}
+                        </div>
+                      ) : (
+                        <div className="text-slate-400 text-[11px] bg-[#090d10] p-2 rounded-lg border border-slate-800">
+                          Не удалось определить полный объём: {currentMonths == null ? 'срок договора не указан в месяцах' : 'не зафиксирована ежемесячная ставка'}.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                {/* 2. Список найденных ловушек */}
+                {/* 3. Список найденных ловушек */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between px-1">
                     <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
-                      Список выявленных рисков ({MOCK_TRAP_ANALYSIS.traps.length})
+                      Список выявленных условий ({analysisResult.ловушки.length})
                     </h3>
-                    <button
-                      type="button"
-                      onClick={toggleAllTraps}
-                      className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
-                    >
-                      {Object.keys(expandedTraps).length === MOCK_TRAP_ANALYSIS.traps.length 
-                        ? 'Свернуть все' 
-                        : 'Развернуть все'}
-                    </button>
+                    {analysisResult.ловушки.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={toggleAllTraps}
+                        className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+                      >
+                        {Object.keys(expandedTraps).length === analysisResult.ловушки.length 
+                          ? 'Свернуть все' 
+                          : 'Развернуть все'}
+                      </button>
+                    )}
                   </div>
 
-                  <div className="space-y-3">
-                    {MOCK_TRAP_ANALYSIS.traps.map((trap) => {
-                      const isOpen = !!expandedTraps[trap.id];
-                      const isHigh = trap.riskLevel === 'high';
+                  {analysisResult.ловушки.length === 0 ? (
+                    <div className="p-6 rounded-xl bg-[#0f141a] border border-slate-800 text-center text-xs text-slate-400">
+                      Критических условий и скрытых ловушек в тексте договора не обнаружено.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {analysisResult.ловушки.map((trap: TrapItem, index: number) => {
+                        const isOpen = !!expandedTraps[index];
+                        const isHigh = trap.уровень === 'высокий';
 
-                      return (
-                        <div
-                          key={trap.id}
-                          className="bg-[#0f141a] border border-slate-800 rounded-xl overflow-hidden transition-all duration-200 hover:border-slate-700/80"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => toggleTrap(trap.id)}
-                            className="w-full text-left p-4 sm:p-5 flex items-start justify-between gap-3 focus:outline-none"
+                        // Check if this trap can show an exact formula in tenge
+                        const isPenaltyTrap = trap.чем_опасно?.toLowerCase().includes('пен') || 
+                                              trap.чем_опасно?.toLowerCase().includes('штраф') ||
+                                              trap.цитата?.toLowerCase().includes('пен') ||
+                                              trap.цитата?.toLowerCase().includes('штраф');
+
+                        return (
+                          <div
+                            key={index}
+                            className="bg-[#0f141a] border border-slate-800 rounded-xl overflow-hidden transition-all duration-200 hover:border-slate-700/80"
                           >
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                                  {trap.clauseNumber}
-                                </span>
-                                <span className="font-bold text-white text-sm sm:text-base">
-                                  {trap.title}
-                                </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleTrap(index)}
+                              className="w-full text-left p-4 sm:p-5 flex items-start justify-between gap-3 focus:outline-none"
+                            >
+                              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                                    {trap.пункт || `№${index + 1}`}
+                                  </span>
+                                  <span className="font-bold text-white text-sm sm:text-base">
+                                    {trap.чем_опасно ? trap.чем_опасно.slice(0, 70) + (trap.чем_опасно.length > 70 ? '…' : '') : 'Условие договора'}
+                                  </span>
+                                </div>
+
+                                <div>
+                                  {isHigh ? (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/25">
+                                      Высокий
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/25">
+                                      Средний
+                                    </span>
+                                  )}
+                                </div>
                               </div>
 
-                              <div>
-                                {isHigh ? (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/25">
-                                    Высокий
-                                  </span>
+                              <div className="text-slate-400 p-1">
+                                {isOpen ? (
+                                  <ChevronUp className="w-5 h-5" />
                                 ) : (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/25">
-                                    Средний
-                                  </span>
+                                  <ChevronDown className="w-5 h-5" />
                                 )}
                               </div>
-                            </div>
+                            </button>
 
-                            <div className="text-slate-400 p-1">
-                              {isOpen ? (
-                                <ChevronUp className="w-5 h-5" />
-                              ) : (
-                                <ChevronDown className="w-5 h-5" />
-                              )}
-                            </div>
-                          </button>
-
-                          {isOpen && (
-                            <div className="px-4 sm:px-5 pb-5 pt-1 space-y-4 border-t border-slate-800/80 animate-in fade-in duration-200 text-xs sm:text-sm">
-                              <div>
-                                <div className="text-slate-400 text-xs uppercase font-medium mb-1">
-                                  Цитата из договора:
-                                </div>
-                                <div className="p-3 rounded-lg bg-slate-900 border-l-2 border-slate-600 text-slate-300 italic text-xs leading-relaxed font-sans">
-                                  {trap.quote}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div className="text-slate-400 text-xs uppercase font-medium mb-1">
-                                  Чем это опасно простыми словами:
-                                </div>
-                                <p className="text-slate-200 leading-relaxed">
-                                  {trap.dangerExplanation}
-                                </p>
-                              </div>
-
-                              {trap.calculationTenge && (
-                                <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 flex items-start gap-2.5">
-                                  <Coins className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                            {isOpen && (
+                              <div className="px-4 sm:px-5 pb-5 pt-1 space-y-4 border-t border-slate-800/80 animate-in fade-in duration-200 text-xs sm:text-sm">
+                                {trap.цитата && (
                                   <div>
-                                    <div className="font-semibold text-white text-xs sm:text-sm">
-                                      Расчёт: {trap.calculationTenge.amountText}
+                                    <div className="text-slate-400 text-xs uppercase font-medium mb-1">
+                                      Цитата из договора:
                                     </div>
-                                    <div className="text-xs text-slate-400 mt-0.5">
-                                      {trap.calculationTenge.details}
+                                    <div className="p-3 rounded-lg bg-slate-900 border-l-2 border-slate-600 text-slate-300 italic text-xs leading-relaxed font-sans">
+                                      «{trap.цитата}»
                                     </div>
                                   </div>
-                                </div>
-                              )}
+                                )}
 
-                              <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/20">
-                                <div className="text-emerald-400 text-xs uppercase font-semibold mb-1 flex items-center gap-1.5">
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>Что попросить исправить:</span>
+                                <div>
+                                  <div className="text-slate-400 text-xs uppercase font-medium mb-1">
+                                    Чем это опасно простыми словами:
+                                  </div>
+                                  <p className="text-slate-200 leading-relaxed">
+                                    {trap.чем_опасно}
+                                  </p>
                                 </div>
-                                <p className="text-emerald-200/90 text-xs leading-relaxed">
-                                  {trap.recommendation}
-                                </p>
+
+                                {/* In-card calculation formula if penalty related */}
+                                {isPenaltyTrap && hasPenaltyParams && (
+                                  <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 flex items-start gap-2.5">
+                                    <Coins className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-semibold text-white text-xs sm:text-sm font-mono">
+                                        Формула: {currentPenaltyRate}% × {formatTenge(currentPayment!)} × 30 дней = {formatTenge((currentPenaltyRate! / 100) * currentPayment! * 30)}
+                                      </div>
+                                      <div className="text-xs text-slate-400 mt-0.5">
+                                        Расчёт пени кодом сайта при задержке платежа на 30 календарных дней
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {trap.что_просить && (
+                                  <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/20">
+                                    <div className="text-emerald-400 text-xs uppercase font-semibold mb-1 flex items-center gap-1.5">
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Что попросить исправить:</span>
+                                    </div>
+                                    <p className="text-emerald-200/90 text-xs leading-relaxed">
+                                      {trap.что_просить}
+                                    </p>
+                                  </div>
+                                )}
                               </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
-                {/* 4. Кнопка «Подготовить письмо контрагенту» */}
+                {/* 4. Кнопка «Подготовить письмо контрагенту» (ШАГ 2) */}
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="space-y-1">
                     <h3 className="font-bold text-white text-base">
                       Хотите предложить исправления контрагенту?
                     </h3>
                     <p className="text-xs text-slate-400">
-                      Сгенерировано вежливое деловое письмо с перечнем ключевых правок и компромиссных вариантов.
+                      ИИ подготовит вежливое деловое письмо с 3–5 ключевыми просьбами и компромиссным вариантом.
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => setIsLetterModalOpen(true)}
-                    className="shrink-0 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all active:scale-[0.99]"
+                    onClick={handleGenerateLetter}
+                    disabled={isGeneratingLetter}
+                    className="shrink-0 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all active:scale-[0.99] disabled:opacity-75"
                   >
-                    <Send className="w-4 h-4 text-emerald-400" />
-                    <span>Подготовить письмо контрагенту</span>
+                    {isGeneratingLetter ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                        <span>Готовим письмо контрагенту…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4 text-emerald-400" />
+                        <span>Подготовить письмо контрагенту</span>
+                      </>
+                    )}
                   </button>
                 </div>
 
-                {/* 5. Блок «Важные сроки» с напоминаниями */}
-                <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl">
-                  <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider mb-4">
-                    <CalendarDays className="w-4 h-4 text-emerald-400" />
-                    <span>Важные сроки</span>
+                {letterError && (
+                  <div className="p-3 rounded-xl bg-rose-950/20 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
+                    <span>{letterError}</span>
+                    <button
+                      type="button"
+                      onClick={handleGenerateLetter}
+                      className="underline text-rose-200 font-semibold"
+                    >
+                      Повторить
+                    </button>
                   </div>
+                )}
 
-                  <div className="space-y-3">
-                    {MOCK_TRAP_ANALYSIS.importantDates.map((item) => (
-                      <div
-                        key={item.id}
-                        className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-                      >
-                        <div className="space-y-0.5">
-                          <div className="text-xs font-semibold text-white">
-                            {item.title}
+                {/* 5. Блок «Важные сроки» (из ответа модели) */}
+                {analysisResult.важные_сроки && analysisResult.важные_сроки.length > 0 && (
+                  <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl">
+                    <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider mb-4">
+                      <CalendarDays className="w-4 h-4 text-emerald-400" />
+                      <span>Важные сроки</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {analysisResult.важные_сроки.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                        >
+                          <div className="space-y-0.5">
+                            <div className="text-xs font-semibold text-white">
+                              {item.что}
+                            </div>
+                            <div className="text-xs text-emerald-400">
+                              {item.когда}
+                            </div>
                           </div>
-                          <div className="text-xs text-emerald-400">
-                            {item.deadlineText}
+
+                          <div className="self-start sm:self-center">
+                            <button
+                              disabled
+                              type="button"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-400 border border-slate-700/60 cursor-not-allowed opacity-80"
+                            >
+                              <Bell className="w-3.5 h-3.5 text-slate-500" />
+                              <span>Напомнить мне</span>
+                              <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                                Скоро
+                              </span>
+                            </button>
                           </div>
                         </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-                        <div className="self-start sm:self-center">
-                          <button
-                            disabled
-                            type="button"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-400 border border-slate-700/60 cursor-not-allowed opacity-80"
-                          >
-                            <Bell className="w-3.5 h-3.5 text-slate-500" />
-                            <span>Напомнить мне</span>
-                            <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                              Скоро
-                            </span>
-                          </button>
+                {/* 6. Блок «3 вопроса юристу» (из ответа модели) */}
+                {analysisResult.вопросы_юристу && analysisResult.вопросы_юристу.length > 0 && (
+                  <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl">
+                    <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider mb-3">
+                      <HelpCircle className="w-4 h-4 text-emerald-400" />
+                      <span>Вопросы юристу ({analysisResult.вопросы_юристу.length})</span>
+                    </div>
+                    <p className="text-xs text-slate-400 mb-4">
+                      Если вы решите проконсультироваться с юристом перед подписанием, задайте ему эти точечные вопросы по договору:
+                    </p>
+
+                    <div className="space-y-2.5">
+                      {analysisResult.вопросы_юристу.map((q: string, idx: number) => (
+                        <div
+                          key={idx}
+                          className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-start gap-3"
+                        >
+                          <span className="w-5 h-5 rounded-full bg-slate-800 text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                            {idx + 1}
+                          </span>
+                          <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
+                            {q}
+                          </p>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
-
-                {/* 6. Блок «3 вопроса юристу» */}
-                <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl">
-                  <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider mb-3">
-                    <HelpCircle className="w-4 h-4 text-emerald-400" />
-                    <span>3 вопроса юристу</span>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-4">
-                    Если вы решите проконсультироваться с юристом перед подписанием, задайте ему эти точечные вопросы:
-                  </p>
-
-                  <div className="space-y-2.5">
-                    {MOCK_TRAP_ANALYSIS.questionsForLawyer.map((q, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-start gap-3"
-                      >
-                        <span className="w-5 h-5 rounded-full bg-slate-800 text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
-                          {idx + 1}
-                        </span>
-                        <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
-                          {q}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                )}
 
                 {/* 7. Внизу кнопка «Перейти к фиксации договора» */}
                 <div className="pt-2">
@@ -1297,7 +1646,7 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* Статус: «Зафиксирован» (зелёная галочка) */}
+                  {/* Статус */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                       Статус
@@ -1398,7 +1747,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Сеть: «Solana (тестовый режим)» */}
+                  {/* Сеть */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                       Сеть
@@ -1411,7 +1760,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Пояснение: «Если в документе изменить даже одну запятую, отпечаток не совпадёт» */}
+                  {/* Пояснение */}
                   <div className="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/20 text-emerald-200/90 text-sm flex items-start gap-3">
                     <Info className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                     <div className="space-y-1">
@@ -1460,7 +1809,7 @@ export default function App() {
 
                         <div className="p-2.5 rounded-lg bg-red-950/20 border border-red-500/20">
                           <div className="flex items-center justify-between text-[11px] text-red-400 font-semibold mb-1">
-                            <span>Измененная версия (например, замена 450 000 ₸ ➔ 250 000 ₸)</span>
+                            <span>Измененная версия (изменение одного слова или суммы)</span>
                             <span>Подделка обнаружена ✗</span>
                           </div>
                           <code className="text-[11px] font-mono text-red-300/80 break-all">
@@ -1555,7 +1904,7 @@ export default function App() {
                           <span className="truncate">{item.documentName}</span>
                         </div>
                         <div className="text-[11px] text-slate-400 shrink-0 flex items-center gap-1.5">
-                          <Clock className="w-3 h-3" />
+                          <Clock className="w-3.5 h-3.5" />
                           <span>{item.timestamp}</span>
                         </div>
                       </div>
@@ -1593,7 +1942,7 @@ export default function App() {
                           className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-medium"
                         >
                           <span>Посмотреть запись</span>
-                          <ExternalLink className="w-3 h-3" />
+                          <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       </div>
                     </div>
@@ -1604,7 +1953,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Feature Highlights / FAQ for Kazakhstan SMB */}
+        {/* Feature Highlights */}
         <div className="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="p-4 rounded-xl bg-[#0e141a]/60 border border-slate-800/80">
             <div className="text-emerald-400 font-semibold text-sm mb-1 flex items-center gap-2">
@@ -1639,7 +1988,7 @@ export default function App() {
 
       </main>
 
-      {/* MODAL: Подготовить письмо контрагенту */}
+      {/* MODAL: Подготовить письмо контрагенту (редактируемый текст) */}
       {isLetterModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-[#0e141a] border border-slate-700/80 rounded-2xl max-w-xl w-full p-6 sm:p-7 shadow-2xl relative max-h-[90vh] flex flex-col">
@@ -1661,17 +2010,22 @@ export default function App() {
 
             <div className="py-4 flex-1 overflow-y-auto space-y-3">
               <p className="text-xs text-slate-400">
-                Готовый текст вежливого делового письма. Содержит главные пункты разногласий и компромиссный вариант:
+                Готовое деловое письмо от ИИ. Вы можете отредактировать текст перед отправкой:
               </p>
-              <div className="p-4 rounded-xl bg-[#080c0f] border border-slate-800/90 text-xs sm:text-sm text-slate-200 font-sans whitespace-pre-line leading-relaxed select-all">
-                {MOCK_TRAP_ANALYSIS.draftLetter.text}
-              </div>
+              
+              <textarea
+                value={letterText}
+                onChange={(e) => setLetterText(e.target.value)}
+                rows={12}
+                className="w-full p-4 rounded-xl bg-[#080c0f] border border-slate-800 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-slate-200 font-sans leading-relaxed resize-y selection:bg-emerald-500/30"
+                placeholder="Текст письма..."
+              />
             </div>
 
             <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => copyToClipboard(MOCK_TRAP_ANALYSIS.draftLetter.text, setCopiedLetter)}
+                onClick={() => copyToClipboard(letterText, setCopiedLetter)}
                 className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2"
               >
                 {copiedLetter ? (
@@ -1708,7 +2062,7 @@ export default function App() {
             <span className="hidden sm:inline">Проверка и фиксация договоров в блокчейне Solana</span>
           </div>
           <div className="flex items-center gap-4 text-slate-400">
-            <span>ст. 152 ГК РК</span>
+            <span className="text-amber-400/80 font-medium">Предварительная проверка, не юридическая консультация</span>
             <span>·</span>
             <span className="text-emerald-400/90 font-mono">SPL Memo Program</span>
           </div>
