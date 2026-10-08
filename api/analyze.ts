@@ -3,39 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
-// @ts-ignore
-import mammoth from 'mammoth';
+// 1. Primary check system instruction (exact user instruction)
+const SYSTEM_INSTRUCTION_PRIMARY = `Ты проверяешь договор для предпринимателя в Казахстане. Найди не более 5 самых опасных для подписывающего условий: автопродление, неравные штрафы или сроки, одностороннее изменение цены, скрытые платежи, невозврат залога, расходы без документов, неудобная подсудность, противоречия в суммах. Только то, что реально есть в тексте. Цитата не длиннее 15 слов. Числа бери дословно, если нет, то null. Без процентов безопасности и юридических заключений. Отвечай только JSON на русском: {"риск":"низкий|средний|высокий","ловушки":[{"пункт":"","цитата":"","опасность":"до 20 слов","просить":"до 15 слов","уровень":"средний|высокий"}],"числа":{"платёж":null,"штраф_в_день_процент":null,"залог":null}}`;
 
-const SYSTEM_INSTRUCTION_STEP1 = `Ты помощник, который проверяет договоры для предпринимателей и малого бизнеса в Казахстане. Твоя задача: прочитать договор и найти условия, которые могут быть невыгодны стороне, подписывающей договор, и объяснить их простым языком человеку без юридического образования.
+// 2. Recheck system instruction (exact user instruction)
+const SYSTEM_INSTRUCTION_RECHECK = `Сравни новую версию договора со списком ранее найденных ловушек. Для каждой укажи статус: «устранена», «осталась» или «изменена» (одна короткая фраза почему). Затем добавь не более 3 новых опасных условий, которых не было в списке. Только то, что есть в тексте. Отвечай только JSON на русском: {"риск":"низкий|средний|высокий","сравнение":[{"пункт":"","статус":"устранена|осталась|изменена","почему":"до 15 слов"}],"новые_ловушки":[{"пункт":"","цитата":"","опасность":"до 20 слов","просить":"до 15 слов","уровень":"средний|высокий"}],"числа":{"платёж":null,"штраф_в_день_процент":null,"залог":null}}`;
 
-Как анализировать:
-1. Сначала определи тип договора (аренда, оказание услуг, поставка, подряд и т.д.) и стороны. Если непонятно, какую сторону представляет пользователь, анализируй с точки зрения более слабой стороны (арендатор, заказчик, покупатель, исполнитель без предоплаты).
-2. Читай договор пункт за пунктом и ищи: автоматическое продление и сроки уведомления; одностороннее изменение цены или условий; неравные штрафы и неустойки (разные проценты или лимиты для сторон, отсутствие лимита); неравные сроки уведомления об отказе и расторжении; скрытые платежи и сборы; обеспечительные платежи и условия их невозврата; возмещение расходов без подтверждающих документов; право второй стороны входить, проверять или менять условия без предупреждения; неудобная подсудность; противоречия и ошибки (суммы цифрами и словами не совпадают, пункты противоречат друг другу, неясные формулировки вроде «по усмотрению», «по рыночной цене» без порядка расчёта); отсутствие важного (нет срока, суммы, порядка расчётов).
-3. Для каждой находки укажи номер пункта, дословную цитату из договора, объясни простыми словами, чем это опасно, и предложи, что попросить исправить. Не выдумывай: если условия нет в тексте, не упоминай его. Не цитируй то, чего нет в документе.
-4. Уровень каждой находки: «высокий», если условие может привести к существенным потерям или лишает защиты; «средний», если создаёт неудобство или риск при определённых обстоятельствах. Не выдавай процентов безопасности и оценок вроде «87%».
-5. Все числа (суммы, проценты, сроки в днях) извлекай дословно из текста. Если числа в договоре нет, ставь null. Ничего не считай и не оценивай сам: расчёты сделает код.
-6. Не давай юридических заключений вроде «условие незаконно» и не гарантируй исход. Если формулировка неоднозначна, так и скажи.
-7. Если текст не читается или это не договор, верни поле error с коротким объяснением.
+// 3. Counterpart letter system instruction (exact user instruction)
+const SYSTEM_INSTRUCTION_LETTER = `Напиши вежливое деловое письмо на русском до 120 слов: 3 просьбы об изменении и один запасной вариант-компромисс. Места для имён в [скобках]. Только текст письма.`;
 
-Отвечай только JSON без пояснений и без markdown, на русском языке.
-
-Формат JSON:
-{"тип_договора": string, "стороны": [string], "общий_уровень_риска": "низкий" | "средний" | "высокий", "ловушки": [{"пункт": string, "цитата": string, "чем_опасно": string, "уровень": "средний" | "высокий", "что_просить": string}], "числа": {"ежемесячный_платёж": number|null, "процент_штрафа_в_день": number|null, "лимит_штрафа": string|null, "залог": number|null, "срок_уведомления_дней": number|null, "срок_договора_месяцев": number|null}, "важные_сроки": [{"что": string, "когда": string}], "вопросы_юристу": [string], "error": string|null}`;
-
-const SYSTEM_INSTRUCTION_STEP2 = `Ты помогаешь предпринимателю в Казахстане договориться об изменении условий договора с другой стороной. Напиши готовое деловое письмо на русском языке.
-
-Требования к письму:
-1. Тон вежливый, деловой и конструктивный. Без обвинений, угроз и юридических терминов, которые пользователь не поймёт. Цель: договориться, а не поссориться.
-2. Структура: короткое обращение; одна строка благодарности или заинтересованности в сотрудничестве; фраза о том, что после изучения проекта договора есть несколько предложений; пронумерованные просьбы; запасной вариант; завершение с просьбой ответить к определённому сроку и готовностью обсудить.
-3. Выбери 3–5 самых важных просьб (в первую очередь ловушки высокого уровня). Для каждой просьбы укажи номер пункта, коротко объясни, что именно предлагается изменить, и дай одну деловую причину (например, «чтобы условия были равными для обеих сторон»).
-4. Для 1–2 самых спорных пунктов предложи запасной вариант-компромисс, на случай если другая сторона не согласится (например, снизить лимит неустойки вместо полного отказа от неё).
-5. Используй только пункты и факты из переданного списка ловушек. Не выдумывай пункты, суммы, названия сторон и даты. Если названия сторон неизвестны, оставь места для подстановки в квадратных скобках: [Название компании], [Имя], [Дата].
-6. Не обещай исход и не утверждай, что условия незаконны.
-7. Длина письма до 250 слов, текст без лишних украшений.
-
-Верни только текст письма.`;
+// Preferred model is fast & light Gemini Flash-Lite; fallback to Flash
+const PRIMARY_MODEL = 'gemini-3.1-flash-lite';
+const FALLBACK_MODEL = 'gemini-3.8-flash';
 
 function cleanJsonString(raw: string): string {
   let cleaned = raw.trim();
@@ -47,30 +28,65 @@ function cleanJsonString(raw: string): string {
   return cleaned;
 }
 
-async function callGeminiWithRetry(fn: () => Promise<any>, retries = 3, delayMs = 1500): Promise<any> {
+/**
+ * Execute Gemini call with fallback from Flash-Lite to Flash, and retry on transient errors
+ */
+async function callGeminiOptimized(
+  ai: GoogleGenAI,
+  requestConfig: {
+    systemInstruction: string;
+    contents: any;
+    maxOutputTokens: number;
+    responseMimeType?: string;
+  }
+): Promise<string> {
+  const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
   let lastError: any;
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastError = err;
-      const errMsg = String(err?.message || err);
-      const isTransient = errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429') || errMsg.includes('high demand') || errMsg.includes('RESOURCE_EXHAUSTED');
-      if (isTransient && attempt < retries) {
-        console.warn(`Gemini call attempt ${attempt} failed with transient error, retrying in ${delayMs}ms...`);
-        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
-        continue;
+
+  for (const model of modelsToTry) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: requestConfig.contents,
+          config: {
+            systemInstruction: requestConfig.systemInstruction,
+            maxOutputTokens: requestConfig.maxOutputTokens,
+            responseMimeType: requestConfig.responseMimeType,
+            thinkingConfig: {
+              thinkingLevel: ThinkingLevel.MINIMAL,
+            },
+          },
+        });
+
+        const text = response.text || '';
+        if (text.trim()) {
+          return text;
+        }
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || err);
+        const isModelNotFound = msg.includes('not found') || msg.includes('unsupported') || msg.includes('INVALID_ARGUMENT');
+        if (isModelNotFound) {
+          // Break immediately to fallback model
+          break;
+        }
+        const isTransient = msg.includes('503') || msg.includes('429') || msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED');
+        if (isTransient && attempt === 1) {
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
       }
-      throw err;
     }
   }
-  throw lastError;
+
+  throw lastError || new Error('Не удалось получить ответ от ИИ модели.');
 }
 
 function formatFriendlyError(error: any): string {
   const raw = String(error?.message || error || '');
   if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
-    return 'Сервис Gemini временно перегружен запросами. Пожалуйста, нажмите «Повторить».';
+    return 'Сервис Gemini временно перегружен запросами. Нажмите «Повторить».';
   }
   if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED')) {
     return 'Превышен лимит запросов к ИИ. Подождите несколько секунд и нажмите «Повторить».';
@@ -106,119 +122,230 @@ export async function handleAnalyzeRequest(req: any, res: any) {
   const { action } = body;
 
   try {
+    // -------------------------------------------------------------------------
+    // 1. PRIMARY CHECK (ПЕРВИЧНАЯ ПРОВЕРКА): max 1200 tokens
+    // -------------------------------------------------------------------------
     if (action === 'check_traps') {
-      const { fileName, mimeType, fileBase64, fileText } = body;
+      const { fileText, fileBase64, mimeType } = body;
 
-      if (!fileBase64 && !fileText) {
-        return res.status(400).json({ error: 'Файл договора не передан для анализа.' });
+      if (!fileText && !fileBase64) {
+        return res.status(400).json({ error: 'Текст или изображение договора не переданы для анализа.' });
       }
 
-      const contentsParts: any[] = [];
-
-      const lowerName = (fileName || '').toLowerCase();
-      const isPdf = (mimeType && mimeType.includes('pdf')) || lowerName.endsWith('.pdf');
-      const isImage = (mimeType && mimeType.startsWith('image/')) || /\.(png|jpe?g|webp)$/i.test(lowerName);
-      const isDocx = (mimeType && (mimeType.includes('wordprocessingml') || mimeType.includes('docx'))) || lowerName.endsWith('.docx');
-
-      if (isPdf && fileBase64) {
-        contentsParts.push({
-          inlineData: {
-            mimeType: 'application/pdf',
-            data: fileBase64,
-          },
-        });
-        contentsParts.push({
-          text: `Перед тобой проект договора в формате PDF (${fileName || 'документ'}). Внимательно проанализируй все его пункты и выяви условия, опасные для подписывающей стороны, согласно системной инструкции. Верни только JSON.`,
-        });
-      } else if (isImage && fileBase64) {
-        const imgMime = mimeType && mimeType.startsWith('image/')
-          ? mimeType
-          : (lowerName.endsWith('.png') ? 'image/png' : 'image/jpeg');
-        contentsParts.push({
-          inlineData: {
-            mimeType: imgMime,
-            data: fileBase64,
-          },
-        });
-        contentsParts.push({
-          text: `Перед тобой изображение договора или страницы документа (${fileName || 'договор'}). Внимательно прочитай весь текст на изображении, проанализируй все его пункты и выяви условия, опасные для подписывающей стороны, согласно системной инструкции. Верни только JSON.`,
-        });
-      } else if (isDocx && fileBase64) {
-        let textContent = '';
-        try {
-          const docBuffer = Buffer.from(fileBase64, 'base64');
-          const mammothResult = await mammoth.extractRawText({ buffer: docBuffer });
-          textContent = mammothResult.value;
-        } catch (docxErr) {
-          console.error('Failed to parse docx via mammoth:', docxErr);
-        }
-
-        if (!textContent || textContent.trim().length === 0) {
-          return res.status(400).json({
-            error: 'Не удалось извлечь текст из файла DOCX. Убедитесь, что файл содержит текст договора и не повреждён.',
-          });
-        }
-
-        contentsParts.push({
-          text: `Текст документа для анализа из файла DOCX (${fileName || 'договор'}):\n\n${textContent}\n\nПроанализируй текст договора в соответствии с системной инструкции и верни строго JSON.`,
-        });
+      let contents: any;
+      if (fileText) {
+        // Send pure text to model (minimizes tokens)
+        contents = `Текст договора:\n${fileText}`;
       } else {
-        // Plain text document
-        let textContent = fileText;
-        if (!textContent && fileBase64) {
-          try {
-            textContent = Buffer.from(fileBase64, 'base64').toString('utf-8');
-          } catch {
-            textContent = '';
-          }
-        }
-
-        if (!textContent || textContent.trim().length === 0) {
-          return res.status(400).json({
-            error: 'Не удалось прочитать текст файла. Убедитесь, что файл не пустой и содержит текстовые данные.',
-          });
-        }
-
-        contentsParts.push({
-          text: `Текст документа для анализа (${fileName || 'договор'}):\n\n${textContent}\n\nПроанализируй текст договора в соответствии с системной инструкцией и верни строго JSON.`,
-        });
+        // Fallback for resized images (PNG/JPG)
+        const imgMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+        contents = {
+          parts: [
+            {
+              inlineData: {
+                mimeType: imgMime,
+                data: fileBase64,
+              },
+            },
+            {
+              text: 'Проверь договор на изображении согласно системной инструкции.',
+            },
+          ],
+        };
       }
 
-      const response = await callGeminiWithRetry(() =>
-        ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: {
-            parts: contentsParts,
-          },
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION_STEP1,
-            responseMimeType: 'application/json',
-          },
-        })
-      );
+      const responseText = await callGeminiOptimized(ai, {
+        systemInstruction: SYSTEM_INSTRUCTION_PRIMARY,
+        contents,
+        maxOutputTokens: 1200,
+        responseMimeType: 'application/json',
+      });
 
-      const responseText = response.text || '';
-      if (!responseText.trim()) {
-        return res.status(500).json({
-          error: 'ИИ не вернул ответ при проверке договора. Пожалуйста, попробуйте снова.',
-        });
-      }
-
-      let parsedData: any;
+      let parsed: any;
       try {
         const cleaned = cleanJsonString(responseText);
-        parsedData = JSON.parse(cleaned);
+        parsed = JSON.parse(cleaned);
       } catch (parseErr) {
-        console.error('Failed to parse Gemini response as JSON:', parseErr, responseText);
+        console.error('Failed to parse primary check JSON:', parseErr, responseText);
         return res.status(500).json({
           error: 'Ответ модели поступил в неверном формате. Попробуйте повторить запрос.',
         });
       }
 
-      return res.status(200).json(parsedData);
+      // Normalize data for frontend compatibility
+      const riskLevel = parsed.риск || parsed.общий_уровень_риска || 'средний';
+      const rawTraps = Array.isArray(parsed.ловушки) ? parsed.ловушки : [];
+      const normalizedTraps = rawTraps.map((t: any, index: number) => ({
+        пункт: t.пункт || `№${index + 1}`,
+        цитата: t.цитата || '',
+        опасность: t.опасность || t.чем_опасно || 'Выявлено невыгодное условие',
+        чем_опасно: t.опасность || t.чем_опасно || 'Выявлено невыгодное условие',
+        просить: t.просить || t.что_просить || 'Предложить изменить условие',
+        что_просить: t.просить || t.что_просить || 'Предложить изменить условие',
+        уровень: t.уровень === 'высокий' ? 'высокий' : 'средний',
+      }));
 
+      const rawNumbers = parsed.числа || {};
+      const normalizedNumbers = {
+        платёж: rawNumbers.платёж ?? rawNumbers.ежемесячный_платёж ?? null,
+        ежемесячный_платёж: rawNumbers.платёж ?? rawNumbers.ежемесячный_платёж ?? null,
+        штраф_в_день_процент: rawNumbers.штраф_в_день_процент ?? rawNumbers.процент_штрафа_в_день ?? null,
+        процент_штрафа_в_день: rawNumbers.штраф_в_день_процент ?? rawNumbers.процент_штрафа_в_день ?? null,
+        залог: rawNumbers.залог ?? null,
+        лимит_штрафа: rawNumbers.лимит_штрафа ?? null,
+        срок_уведомления_дней: rawNumbers.срок_уведомления_дней ?? null,
+        срок_договора_месяцев: rawNumbers.срок_договора_месяцев ?? null,
+      };
+
+      return res.status(200).json({
+        риск: riskLevel,
+        общий_уровень_риска: riskLevel,
+        ловушки: normalizedTraps,
+        числа: normalizedNumbers,
+      });
+
+    // -------------------------------------------------------------------------
+    // 2. RECHECK AGREED VERSION (ПОВТОРНАЯ ПРОВЕРКА): max 600 tokens
+    // -------------------------------------------------------------------------
+    } else if (action === 'recheck_agreed') {
+      const { fileText, fileBase64, mimeType, previousTraps } = body;
+
+      if (!fileText && !fileBase64) {
+        return res.status(400).json({ error: 'Текст новой версии договора не передан для проверки.' });
+      }
+
+      const trapsSummary = Array.isArray(previousTraps) && previousTraps.length > 0
+        ? previousTraps.map((t: any, i: number) => {
+            const p = t.пункт || `№${i + 1}`;
+            const s = t.суть || t.опасность || t.чем_опасно || '';
+            return `${i + 1}. Пункт ${p}: ${s}`;
+          }).join('\n')
+        : 'Список ранее найденных ловушек пуст.';
+
+      let contents: any;
+      if (fileText) {
+        contents = `Ранее найденные ловушки:\n${trapsSummary}\n\nНовая версия договора:\n${fileText}`;
+      } else {
+        const imgMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+        contents = {
+          parts: [
+            {
+              inlineData: {
+                mimeType: imgMime,
+                data: fileBase64,
+              },
+            },
+            {
+              text: `Ранее найденные ловушки:\n${trapsSummary}\n\nСравни новую версию договора со списком согласно системной инструкции.`,
+            },
+          ],
+        };
+      }
+
+      const responseText = await callGeminiOptimized(ai, {
+        systemInstruction: SYSTEM_INSTRUCTION_RECHECK,
+        contents,
+        maxOutputTokens: 600,
+        responseMimeType: 'application/json',
+      });
+
+      let parsed: any;
+      try {
+        const cleaned = cleanJsonString(responseText);
+        parsed = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.error('Failed to parse recheck JSON:', parseErr, responseText);
+        return res.status(500).json({
+          error: 'Ответ модели поступил в неверном формате. Попробуйте повторить запрос.',
+        });
+      }
+
+      const comparison = Array.isArray(parsed.сравнение) ? parsed.сравнение : [];
+      const newTrapsRaw = Array.isArray(parsed.новые_ловушки) ? parsed.новые_ловушки : [];
+
+      const normalizedNewTraps = newTrapsRaw.map((t: any, idx: number) => ({
+        пункт: t.пункт || `Новый №${idx + 1}`,
+        цитата: t.цитата || '',
+        опасность: t.опасность || t.чем_опасно || '',
+        чем_опасно: t.опасность || t.чем_опасно || '',
+        просить: t.просить || t.что_просить || '',
+        что_просить: t.просить || t.что_просить || '',
+        уровень: t.уровень === 'высокий' ? 'высокий' : 'средний',
+      }));
+
+      // Calculate progress: "Устранено X из N"
+      const totalCount = Array.isArray(previousTraps) && previousTraps.length > 0
+        ? previousTraps.length
+        : comparison.length;
+
+      const eliminatedCount = comparison.filter((c: any) =>
+        String(c.статус || '').toLowerCase().includes('устран')
+      ).length;
+
+      const remainingTraps = [
+        ...comparison.filter((c: any) => !String(c.статус || '').toLowerCase().includes('устран')).map((c: any) => ({
+          пункт: c.пункт || '',
+          цитата: '',
+          опасность: `${c.статус === 'изменена' ? 'Условие изменено: ' : 'Условие осталось: '}${c.почему || ''}`,
+          чем_опасно: `${c.статус === 'изменена' ? 'Условие изменено: ' : 'Условие осталось: '}${c.почему || ''}`,
+          просить: 'Проверить формулировку',
+          что_просить: 'Проверить формулировку',
+          уровень: c.статус === 'осталась' ? 'высокий' : 'средний',
+        })),
+        ...normalizedNewTraps,
+      ];
+
+      const rawNumbers = parsed.числа || {};
+      const normalizedNumbers = {
+        платёж: rawNumbers.платёж ?? rawNumbers.ежемесячный_платёж ?? null,
+        ежемесячный_платёж: rawNumbers.платёж ?? rawNumbers.ежемесячный_платёж ?? null,
+        штраф_в_день_процент: rawNumbers.штраф_в_день_процент ?? rawNumbers.процент_штрафа_в_день ?? null,
+        процент_штрафа_в_день: rawNumbers.штраф_в_день_процент ?? rawNumbers.процент_штрафа_в_день ?? null,
+        залог: rawNumbers.залог ?? null,
+        лимит_штрафа: rawNumbers.лимит_штрафа ?? null,
+        срок_уведомления_дней: rawNumbers.срок_уведомления_дней ?? null,
+        срок_договора_месяцев: rawNumbers.срок_договора_месяцев ?? null,
+      };
+
+      // Overall risk for the agreed version
+      let riskLevel: 'низкий' | 'средний' | 'высокий' = parsed.риск || 'низкий';
+      if (!parsed.риск) {
+        if (remainingTraps.some((t: any) => t.уровень === 'высокий')) {
+          riskLevel = 'высокий';
+        } else if (remainingTraps.length > 0) {
+          riskLevel = 'средний';
+        } else {
+          riskLevel = 'низкий';
+        }
+      }
+
+      return res.status(200).json({
+        риск: riskLevel,
+        общий_уровень_риска: riskLevel,
+        сравнение: comparison.map((c: any) => ({
+          пункт: c.пункт || '',
+          статус: String(c.статус || '').toLowerCase().includes('устран')
+            ? 'устранена'
+            : String(c.статус || '').toLowerCase().includes('измен')
+            ? 'изменена'
+            : 'осталась',
+          почему: c.почему || '',
+        })),
+        новые_ловушки: normalizedNewTraps,
+        ловушки: remainingTraps,
+        числа: normalizedNumbers,
+        прогресс: {
+          устранено: eliminatedCount,
+          всего: totalCount,
+          процент: totalCount > 0 ? Math.round((eliminatedCount / totalCount) * 100) : 100,
+        },
+      });
+
+    // -------------------------------------------------------------------------
+    // 3. GENERATE LETTER (ПИСЬМО): max 350 tokens, sending ONLY found traps
+    // -------------------------------------------------------------------------
     } else if (action === 'generate_letter') {
-      const { contractType, parties, traps } = body;
+      const { traps } = body;
 
       if (!traps || !Array.isArray(traps) || traps.length === 0) {
         return res.status(400).json({
@@ -226,40 +353,27 @@ export async function handleAnalyzeRequest(req: any, res: any) {
         });
       }
 
-      const trapsSummary = traps.map((t: any, index: number) => {
-        return `${index + 1}. Пункт: ${t.пункт || 'Без номера'}\n   Уровень: ${t.уровень || 'средний'}\n   Цитата: ${t.цитата || '—'}\n   В чём опасность: ${t.чем_опасно || '—'}\n   Что попросить: ${t.что_просить || '—'}`;
-      }).join('\n\n');
+      // Send ONLY found traps (no full contract text)
+      const trapsSummary = traps.slice(0, 5).map((t: any, index: number) => {
+        const itemNumber = t.пункт || `№${index + 1}`;
+        const danger = t.опасность || t.чем_опасно || 'Рискованное условие';
+        const request = t.просить || t.что_просить || 'Изменить формулировку на паритетную';
+        return `${index + 1}. Пункт ${itemNumber}: ${danger}. Просьба: ${request}`;
+      }).join('\n');
 
-      const prompt = `Тип договора: ${contractType || 'Не указан'}
-Стороны договора: ${Array.isArray(parties) && parties.length > 0 ? parties.join(', ') : 'Не указаны'}
+      const prompt = `Список условий для изменения в договоре:\n${trapsSummary}\n\nНапиши вежливое деловое письмо согласно системной инструкции.`;
 
-Список выявленных условий и ловушек:
-${trapsSummary}
+      const letterText = await callGeminiOptimized(ai, {
+        systemInstruction: SYSTEM_INSTRUCTION_LETTER,
+        contents: prompt,
+        maxOutputTokens: 350,
+      });
 
-Составь вежливое деловое письмо контрагенту согласно системной инструкции. Верни только текст письма.`;
-
-      const response = await callGeminiWithRetry(() =>
-        ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION_STEP2,
-          },
-        })
-      );
-
-      const letterText = response.text?.trim() || '';
-      if (!letterText) {
-        return res.status(500).json({
-          error: 'ИИ не вернул текст письма. Пожалуйста, попробуйте снова.',
-        });
-      }
-
-      return res.status(200).json({ letter: letterText });
+      return res.status(200).json({ letter: letterText.trim() });
 
     } else {
       return res.status(400).json({
-        error: `Неизвестное действие: ${action}. Ожидалось "check_traps" или "generate_letter".`,
+        error: `Неизвестное действие: ${action}. Ожидалось "check_traps", "recheck_agreed" или "generate_letter".`,
       });
     }
 

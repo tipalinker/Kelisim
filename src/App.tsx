@@ -52,6 +52,52 @@ import {
   parseSolanaError,
   BlockchainRecord
 } from './utils/solanaWallet';
+import { prepareFileForAnalysis } from './utils/fileExtract';
+
+// Local storage caching helpers for SHA-256 result reuse
+function getAnalysisCache(hash: string): GeminiContractAnalysis | null {
+  try {
+    const raw = localStorage.getItem(`kelisim_analysis_${hash}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setAnalysisCache(hash: string, data: GeminiContractAnalysis): void {
+  try {
+    localStorage.setItem(`kelisim_analysis_${hash}`, JSON.stringify(data));
+  } catch {}
+}
+
+function getRecheckCache(key: string): GeminiContractAnalysis | null {
+  try {
+    const raw = localStorage.getItem(`kelisim_recheck_${key}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setRecheckCache(key: string, data: GeminiContractAnalysis): void {
+  try {
+    localStorage.setItem(`kelisim_recheck_${key}`, JSON.stringify(data));
+  } catch {}
+}
+
+function getLetterCache(hash: string): string | null {
+  try {
+    return localStorage.getItem(`kelisim_letter_${hash}`) || null;
+  } catch {
+    return null;
+  }
+}
+
+function setLetterCache(hash: string, text: string): void {
+  try {
+    localStorage.setItem(`kelisim_letter_${hash}`, text);
+  } catch {}
+}
 
 interface StampedRecord {
   fileName: string;
@@ -159,14 +205,10 @@ export default function App() {
 
   // Step 2: Trap analysis state (ONLY populated by real Gemini response)
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [isRechecking, setIsRechecking] = useState<boolean>(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<GeminiContractAnalysis | null>(null);
   const [expandedTraps, setExpandedTraps] = useState<Record<number, boolean>>({});
-
-  // Calculation overrides / user inputs for missing contract numbers
-  const [customMonthlyPayment, setCustomMonthlyPayment] = useState<string>('');
-  const [customPenaltyPercent, setCustomPenaltyPercent] = useState<string>('');
-  const [customPenaltyDays, setCustomPenaltyDays] = useState<number>(30);
 
   // Step 2 Letter generation state
   const [isGeneratingLetter, setIsGeneratingLetter] = useState<boolean>(false);
@@ -174,6 +216,14 @@ export default function App() {
   const [letterText, setLetterText] = useState<string>('');
   const [isLetterModalOpen, setIsLetterModalOpen] = useState<boolean>(false);
   const [copiedLetter, setCopiedLetter] = useState<boolean>(false);
+
+  // Calculation overrides / user inputs for missing contract numbers
+  const [customMonthlyPayment, setCustomMonthlyPayment] = useState<string>('');
+  const [customPenaltyPercent, setCustomPenaltyPercent] = useState<string>('');
+  const [customPenaltyDays, setCustomPenaltyDays] = useState<number>(30);
+
+  // Flag indicating any AI request in progress
+  const isAnyRequestInFlight = isAnalyzing || isRechecking || isGeneratingLetter;
 
   // Step 3: Stamping and blockchain state
   const [isProcessingStamp, setIsProcessingStamp] = useState<boolean>(false);
@@ -229,11 +279,13 @@ export default function App() {
   // Synchronize initial numbers for code-based calculations when analysis arrives
   useEffect(() => {
     if (analysisResult?.числа) {
-      if (analysisResult.числа.ежемесячный_платёж != null) {
-        setCustomMonthlyPayment(String(analysisResult.числа.ежемесячный_платёж));
+      const p = analysisResult.числа.ежемесячный_платёж ?? analysisResult.числа.платёж;
+      if (p != null) {
+        setCustomMonthlyPayment(String(p));
       }
-      if (analysisResult.числа.процент_штрафа_в_день != null) {
-        setCustomPenaltyPercent(String(analysisResult.числа.процент_штрафа_в_день));
+      const r = analysisResult.числа.процент_штрафа_в_день ?? analysisResult.числа.штраф_в_день_процент;
+      if (r != null) {
+        setCustomPenaltyPercent(String(r));
       }
     }
   }, [analysisResult]);
@@ -323,8 +375,10 @@ export default function App() {
     }
   };
 
-  // Step 1 & Step 2: Real AI Trap Check via /api/analyze
+  // Step 1 & Step 2: Optimized AI Trap Check via /api/analyze with SHA-256 caching
   const startTrapCheck = async (targetFile?: File) => {
+    if (isAnyRequestInFlight) return;
+
     const fileToAnalyze = targetFile || selectedFile;
     if (!fileToAnalyze) {
       setFileError('Сначала загрузите договор');
@@ -335,17 +389,26 @@ export default function App() {
     setFileError(null);
     setAnalysisError(null);
     setCurrentStep(2);
-    setIsAnalyzing(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     try {
-      const isTxt = fileToAnalyze.name.toLowerCase().endsWith('.txt') || fileToAnalyze.type === 'text/plain';
-      const fileBase64 = await readFileAsBase64(fileToAnalyze);
-      let fileText = '';
-      if (isTxt) {
-        fileText = await readFileAsText(fileToAnalyze);
+      // 1. Calculate SHA-256 hash of the file
+      const fileHash = await calculateFileSha256(fileToAnalyze);
+
+      // 2. Check if result is already cached for this exact file
+      const cached = getAnalysisCache(fileHash);
+      if (cached) {
+        setAnalysisResult(cached);
+        setExpandedTraps({ 0: true, 1: true });
+        return;
       }
 
+      setIsAnalyzing(true);
+
+      // 3. Extract text directly on the page (for PDF, DOCX, TXT) or resize image (PNG, JPG)
+      const prepared = await prepareFileForAnalysis(fileToAnalyze);
+
+      // 4. Send pure text / resized image to API
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: {
@@ -353,10 +416,9 @@ export default function App() {
         },
         body: JSON.stringify({
           action: 'check_traps',
-          fileName: fileToAnalyze.name,
-          mimeType: fileToAnalyze.type || '',
-          fileBase64,
-          fileText,
+          fileText: prepared.fileText,
+          fileBase64: prepared.fileBase64,
+          mimeType: prepared.mimeType,
         }),
       });
 
@@ -370,7 +432,7 @@ export default function App() {
       }
 
       setAnalysisResult(data);
-      // Expand first 2 traps by default
+      setAnalysisCache(fileHash, data);
       setExpandedTraps({ 0: true, 1: true });
     } catch (err: any) {
       console.error('Trap check error:', err);
@@ -380,11 +442,96 @@ export default function App() {
     }
   };
 
+  // Step 2: Optimized Recheck of agreed version (Variant A) - only new text + previous traps list
+  const startAgreedRecheck = async (newAgreedFile: File) => {
+    if (isAnyRequestInFlight) return;
+
+    setFileError(null);
+    setAnalysisError(null);
+    setCurrentStep(2);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    try {
+      // 1. Calculate hashes for caching
+      const prevFile = selectedFile;
+      const prevHash = prevFile ? await calculateFileSha256(prevFile) : 'initial';
+      const newHash = await calculateFileSha256(newAgreedFile);
+      const recheckKey = `${prevHash}_${newHash}`;
+
+      // 2. Check cache
+      const cached = getRecheckCache(recheckKey);
+      if (cached) {
+        setSelectedFile(newAgreedFile);
+        setIsAgreedVersion(true);
+        setReplacementSource('rechecked');
+        setAnalysisResult(cached);
+        setExpandedTraps({ 0: true });
+        return;
+      }
+
+      setIsRechecking(true);
+
+      // 3. Extract text on the page (for PDF, DOCX, TXT) or resize image
+      const prepared = await prepareFileForAnalysis(newAgreedFile);
+
+      // 4. Send only new version text and previous traps summary (clause & essence, no long quotes)
+      const prevTrapsList = (analysisResult?.ловушки || []).map((t: any, i: number) => ({
+        пункт: t.пункт || `№${i + 1}`,
+        суть: t.опасность || t.чем_опасно || '',
+      }));
+
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'recheck_agreed',
+          fileText: prepared.fileText,
+          fileBase64: prepared.fileBase64,
+          mimeType: prepared.mimeType,
+          previousTraps: prevTrapsList,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        const errorMsg = data.error || 'Не удалось выполнить повторную проверку. Попробуйте снова.';
+        setAnalysisError(errorMsg);
+        setIsRechecking(false);
+        return;
+      }
+
+      const mergedResult: GeminiContractAnalysis = {
+        ...analysisResult,
+        риск: data.риск,
+        общий_уровень_риска: data.общий_уровень_риска,
+        ловушки: data.ловушки,
+        числа: data.числа,
+        recheckData: data,
+      };
+
+      setSelectedFile(newAgreedFile);
+      setIsAgreedVersion(true);
+      setReplacementSource('rechecked');
+      setAnalysisResult(mergedResult);
+      setRecheckCache(recheckKey, mergedResult);
+      setExpandedTraps({ 0: true });
+    } catch (err: any) {
+      console.error('Recheck error:', err);
+      setAnalysisError(err?.message || 'Ошибка связи с сервером при повторной проверке.');
+    } finally {
+      setIsRechecking(false);
+    }
+  };
+
   // Navigate to stamping with warning protection if risky contract
   const handleProceedToStamping = () => {
+    const riskLevel = analysisResult?.риск || analysisResult?.общий_уровень_риска;
     const hasRisks = analysisResult && (
-      analysisResult.общий_уровень_риска === 'высокий' ||
-      analysisResult.общий_уровень_риска === 'средний' ||
+      riskLevel === 'высокий' ||
+      riskLevel === 'средний' ||
       (analysisResult.ловушки && analysisResult.ловушки.length > 0)
     );
 
@@ -399,34 +546,49 @@ export default function App() {
 
   // Apply agreed replacement file: Scenario A (recheck) or Scenario B (direct stamp)
   const handleApplyAgreedFile = async (scenario: 'recheck' | 'direct_stamp') => {
-    if (!stagedAgreedFile) return;
+    if (!stagedAgreedFile || isAnyRequestInFlight) return;
 
     const prevName = originalFileName || selectedFile?.name || 'Исходный черновик';
     const prevSize = originalFileSize || (selectedFile ? selectedFile.size : 0);
 
     setOriginalFileName(prevName);
     setOriginalFileSize(prevSize);
-    setIsAgreedVersion(true);
 
     const newDoc = stagedAgreedFile;
-    setSelectedFile(newDoc);
     setStagedAgreedFile(null);
     setAgreedFileError(null);
     setIsAgreedUploadModalOpen(false);
 
     if (scenario === 'recheck') {
-      setReplacementSource('rechecked');
-      await startTrapCheck(newDoc);
+      await startAgreedRecheck(newDoc);
     } else {
+      setSelectedFile(newDoc);
+      setIsAgreedVersion(true);
       setReplacementSource('manual');
       setCurrentStep(3);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
-  // Step 2: Real Counterpart Letter generation via /api/analyze
+  // Step 2: Optimized Counterpart Letter generation (sends ONLY traps, cached by file hash)
   const handleGenerateLetter = async () => {
     if (!analysisResult?.ловушки || analysisResult.ловушки.length === 0) {
+      return;
+    }
+    if (isAnyRequestInFlight) return;
+
+    // Check letter cache by file hash
+    let fileHash = 'default';
+    if (selectedFile) {
+      try {
+        fileHash = await calculateFileSha256(selectedFile);
+      } catch {}
+    }
+
+    const cachedLetter = getLetterCache(fileHash);
+    if (cachedLetter) {
+      setLetterText(cachedLetter);
+      setIsLetterModalOpen(true);
       return;
     }
 
@@ -441,8 +603,6 @@ export default function App() {
         },
         body: JSON.stringify({
           action: 'generate_letter',
-          contractType: analysisResult.тип_договора,
-          parties: analysisResult.стороны,
           traps: analysisResult.ловушки,
         }),
       });
@@ -454,7 +614,9 @@ export default function App() {
         return;
       }
 
-      setLetterText(data.letter || '');
+      const letter = data.letter || '';
+      setLetterText(letter);
+      setLetterCache(fileHash, letter);
       setIsLetterModalOpen(true);
     } catch (err: any) {
       console.error('Letter generation error:', err);
@@ -1108,7 +1270,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => startTrapCheck()}
-                className="w-full relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2"
+                disabled={isAnyRequestInFlight}
+                className="w-full relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 disabled:opacity-75 disabled:cursor-not-allowed"
               >
                 <ShieldAlert className="w-5 h-5 text-slate-950" />
                 <span>Проверить на ловушки</span>
@@ -1177,8 +1340,45 @@ export default function App() {
               </div>
             )}
 
+            {/* Loading state: Повторная экспресс-проверка согласованной версии… */}
+            {isRechecking && (
+              <div className="bg-[#0f141a] border border-emerald-500/30 rounded-2xl p-10 sm:p-14 text-center shadow-xl space-y-6 animate-in fade-in duration-300">
+                <div className="relative w-16 h-16 mx-auto">
+                  <div className="absolute inset-0 rounded-full border-4 border-slate-800" />
+                  <div className="absolute inset-0 rounded-full border-4 border-emerald-400 border-t-transparent animate-spin" />
+                  <div className="absolute inset-0 flex items-center justify-center text-emerald-400">
+                    <RefreshCw className="w-6 h-6 animate-spin" />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="text-xl font-bold text-white tracking-tight">
+                    Сверяем согласованную редакцию договора…
+                  </h3>
+                  <p className="text-sm text-slate-400 max-w-sm mx-auto">
+                    ИИ проверяет, какие условия контрагент исправил, а какие остались без изменений.
+                  </p>
+                </div>
+
+                <div className="max-w-xs mx-auto space-y-2 text-left text-xs text-slate-400">
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Сравнение со списком ранее найденных ловушек</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3.5 h-3.5 border-2 border-emerald-400/40 border-t-emerald-400 rounded-full animate-spin" />
+                    <span className="text-slate-200">Фиксация устранённых и изменённых пунктов</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Формирование экспресс-отчёта по прогрессу</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Error state with retry button */}
-            {!isAnalyzing && analysisError && (
+            {!isAnalyzing && !isRechecking && analysisError && (
               <div className="bg-[#0f141a] border border-rose-500/30 rounded-2xl p-8 text-center shadow-xl space-y-5">
                 <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto">
                   <AlertTriangle className="w-7 h-7" />
@@ -1195,7 +1395,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => startTrapCheck()}
-                    className="px-6 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 shadow-sm"
+                    disabled={isAnyRequestInFlight}
+                    className="px-6 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 shadow-sm disabled:opacity-75 disabled:cursor-not-allowed"
                   >
                     <RefreshCw className="w-4 h-4" />
                     <span>Повторить</span>
@@ -1212,7 +1413,7 @@ export default function App() {
             )}
 
             {/* If not analyzed yet and no error */}
-            {!isAnalyzing && !analysisError && !analysisResult && (
+            {!isAnalyzing && !isRechecking && !analysisError && !analysisResult && (
               <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-10 text-center shadow-xl space-y-4">
                 <FileSearch className="w-12 h-12 text-slate-600 mx-auto" />
                 <h3 className="text-lg font-bold text-white">
@@ -1233,8 +1434,109 @@ export default function App() {
             )}
 
             {/* SUCCESS REAL RESULT FROM GEMINI */}
-            {!isAnalyzing && analysisResult && (
+            {!isAnalyzing && !isRechecking && analysisResult && (
               <>
+                {/* 0. Результат повторной экспресс-проверки (Устранено X из N) */}
+                {analysisResult.recheckData && (
+                  <div className="bg-[#0f141a] border border-emerald-500/40 rounded-2xl p-6 sm:p-7 shadow-xl space-y-5 animate-in fade-in duration-300">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                          <RefreshCw className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-base sm:text-lg font-bold text-white">
+                            Результат повторной проверки согласованной версии
+                          </h3>
+                          <p className="text-xs text-slate-400">
+                            Сравнение со списком ранее найденных условий
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs sm:text-sm bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <span>Устранено {analysisResult.recheckData.прогресс.устранено} из {analysisResult.recheckData.прогресс.всего}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Прогресс-бар */}
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-xs text-slate-400">
+                        <span>Прогресс устранения замечаний</span>
+                        <span className="font-semibold text-emerald-400">{analysisResult.recheckData.прогресс.процент}%</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-400 transition-all duration-500 rounded-full"
+                          style={{ width: `${Math.min(100, Math.max(0, analysisResult.recheckData.прогресс.процент))}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Сравнение по пунктам */}
+                    {analysisResult.recheckData.сравнение && analysisResult.recheckData.сравнение.length > 0 && (
+                      <div className="space-y-2.5 pt-1">
+                        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                          Статус ранее найденных условий:
+                        </div>
+                        <div className="space-y-2">
+                          {analysisResult.recheckData.сравнение.map((item, idx) => {
+                            const isResolved = item.статус === 'устранена';
+                            const isChanged = item.статус === 'изменена';
+                            return (
+                              <div
+                                key={idx}
+                                className={`p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                                  isResolved
+                                    ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
+                                    : isChanged
+                                    ? 'bg-amber-950/20 border-amber-500/30 text-amber-200'
+                                    : 'bg-rose-950/20 border-rose-500/30 text-rose-200'
+                                }`}
+                              >
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono font-semibold px-2 py-0.5 rounded bg-slate-900/80 text-white border border-slate-700/60">
+                                      {item.пункт || `№${idx + 1}`}
+                                    </span>
+                                    <span className="font-medium text-white">{item.суть || 'Условие договора'}</span>
+                                  </div>
+                                  {item.почему && (
+                                    <div className="text-[11px] text-slate-300/90 pl-1">
+                                      {item.почему}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="shrink-0 self-start sm:self-center">
+                                  {isResolved ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span>Устранена</span>
+                                    </span>
+                                  ) : isChanged ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                                      <span>Изменена</span>
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                      <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+                                      <span>Осталась</span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {/* 1. Верхняя карточка с общим уровнем риска и версией документа */}
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 sm:p-7 shadow-xl">
                   <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
@@ -1601,8 +1903,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleGenerateLetter}
-                    disabled={isGeneratingLetter}
-                    className="shrink-0 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all active:scale-[0.99] disabled:opacity-75"
+                    disabled={isAnyRequestInFlight}
+                    className="shrink-0 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all active:scale-[0.99] disabled:opacity-75 disabled:cursor-not-allowed"
                   >
                     {isGeneratingLetter ? (
                       <>
@@ -1812,7 +2114,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleStamp}
-                  disabled={isProcessingStamp}
+                  disabled={isProcessingStamp || isAnyRequestInFlight}
                   className="w-full max-w-md mx-auto relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] disabled:opacity-75 disabled:cursor-wait flex items-center justify-center gap-2"
                 >
                   {isProcessingStamp ? (
@@ -2543,7 +2845,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleApplyAgreedFile('recheck')}
-                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/40 hover:border-emerald-400 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99]"
+                    disabled={isAnyRequestInFlight}
+                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/40 hover:border-emerald-400 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <div className="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5 group-hover:scale-105 transition-transform">
                       <RefreshCw className="w-4 h-4" />
@@ -2558,7 +2861,7 @@ export default function App() {
                         </span>
                       </div>
                       <p className="text-[11px] sm:text-xs text-slate-400 leading-relaxed">
-                        Перезапустить анализ для нового файла, чтобы убедиться, что контрагент действительно убрал все ловушки.
+                        Сравнить новую версию со списком найденных ловушек и выявить статус устранения.
                       </p>
                     </div>
                   </button>
@@ -2567,7 +2870,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleApplyAgreedFile('direct_stamp')}
-                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99]"
+                    disabled={isAnyRequestInFlight}
+                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <div className="w-9 h-9 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 shrink-0 mt-0.5 group-hover:text-emerald-400 transition-colors">
                       <Lock className="w-4 h-4" />
