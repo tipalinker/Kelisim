@@ -38,6 +38,7 @@ import {
   History
 } from 'lucide-react';
 import { MOCK_TRAP_ANALYSIS, RiskTrapItem } from './data/contractTrapData';
+import { KelisimLogo } from './components/KelisimLogo';
 import { 
   getPhantomProvider, 
   formatAddress, 
@@ -441,22 +442,10 @@ export default function App() {
       <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-[#090d10]/95 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-18 flex items-center justify-between">
           {/* Logo & Tag */}
-          <div 
+          <KelisimLogo 
             onClick={() => setCurrentStep(1)} 
-            className="flex items-center gap-3 cursor-pointer group"
-          >
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] group-hover:border-emerald-500/50 transition-colors">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-lg tracking-tight text-white">Kelisim</span>
-                <span className="text-[10px] uppercase font-semibold tracking-wider text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-1.5 py-0.5 rounded">
-                  KZ
-                </span>
-              </div>
-            </div>
-          </div>
+            size="md"
+          />
 
           {/* Connect Wallet Button */}
           <div className="relative">
@@ -1713,10 +1702,10 @@ export default function App() {
       {/* Footer */}
       <footer className="relative z-10 border-t border-slate-800/60 bg-[#070a0d] py-6">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-300">Kelisim</span>
-            <span>·</span>
-            <span>Проверка и фиксация договоров в блокчейне Solana</span>
+          <div className="flex items-center gap-3">
+            <KelisimLogo size="sm" showSubtitle={false} onClick={() => setCurrentStep(1)} />
+            <span className="hidden sm:inline">·</span>
+            <span className="hidden sm:inline">Проверка и фиксация договоров в блокчейне Solana</span>
           </div>
           <div className="flex items-center gap-4 text-slate-400">
             <span>ст. 152 ГК РК</span>
