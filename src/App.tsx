@@ -36,11 +36,14 @@ import {
   Database,
   History,
   FileSearch,
-  Calculator
+  Calculator,
+  Settings,
+  Sliders
 } from 'lucide-react';
 import { 
   GeminiContractAnalysis, 
-  TrapItem 
+  TrapItem,
+  RuleViolation 
 } from './data/contractTrapData';
 import { KelisimLogo } from './components/KelisimLogo';
 import { 
@@ -53,6 +56,30 @@ import {
   BlockchainRecord
 } from './utils/solanaWallet';
 import { prepareFileForAnalysis } from './utils/fileExtract';
+import { BusinessProfileModal, BusinessProfile } from './components/BusinessProfileModal';
+import { DocumentVerification } from './components/DocumentVerification';
+
+const BUSINESS_PROFILE_STORAGE_KEY = 'kelisim_business_profile';
+
+const defaultBusinessProfile: BusinessProfile = {
+  role: '',
+  maxPenaltyPercent: '',
+  maxPaymentDays: '',
+  minNoticeDays: '',
+  disputeCity: '',
+  customRules: '',
+};
+
+function formatProfileSummary(profile: BusinessProfile): string {
+  const parts: string[] = [];
+  if (profile.role) parts.push(`Роль: ${profile.role}`);
+  if (profile.maxPenaltyPercent) parts.push(`макс. неустойка в день: ${profile.maxPenaltyPercent}%`);
+  if (profile.maxPaymentDays) parts.push(`срок оплаты: до ${profile.maxPaymentDays} дн.`);
+  if (profile.minNoticeDays) parts.push(`мин. срок уведомления об отказе: ${profile.minNoticeDays} дн.`);
+  if (profile.disputeCity) parts.push(`город споров: ${profile.disputeCity}`);
+  if (profile.customRules && profile.customRules.trim()) parts.push(`доп. правила: ${profile.customRules.trim().slice(0, 300)}`);
+  return parts.join(', ');
+}
 
 // Local storage caching helpers for SHA-256 result reuse
 function getAnalysisCache(hash: string): GeminiContractAnalysis | null {
@@ -195,6 +222,47 @@ function readFileAsText(file: File): Promise<string> {
 }
 
 export default function App() {
+  // Navigation mode: 'audit' (standard 3-step workflow) vs 'verify' (check document without wallet)
+  const [activeMode, setActiveMode] = useState<'audit' | 'verify'>('audit');
+
+  // Business Profile state (persisted in localStorage with try/catch)
+  const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => {
+    try {
+      const raw = localStorage.getItem(BUSINESS_PROFILE_STORAGE_KEY);
+      return raw ? { ...defaultBusinessProfile, ...JSON.parse(raw) } : defaultBusinessProfile;
+    } catch {
+      return defaultBusinessProfile;
+    }
+  });
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+
+  const isProfileFilled = Boolean(
+    businessProfile.role ||
+    businessProfile.maxPenaltyPercent ||
+    businessProfile.maxPaymentDays ||
+    businessProfile.minNoticeDays ||
+    businessProfile.disputeCity ||
+    businessProfile.customRules?.trim()
+  );
+
+  const handleSaveProfile = (newProfile: BusinessProfile) => {
+    setBusinessProfile(newProfile);
+    try {
+      localStorage.setItem(BUSINESS_PROFILE_STORAGE_KEY, JSON.stringify(newProfile));
+    } catch (err) {
+      console.warn('Failed to save business profile to localStorage:', err);
+    }
+  };
+
+  const handleClearProfile = () => {
+    setBusinessProfile(defaultBusinessProfile);
+    try {
+      localStorage.removeItem(BUSINESS_PROFILE_STORAGE_KEY);
+    } catch (err) {
+      console.warn('Failed to clear business profile from localStorage:', err);
+    }
+  };
+
   // Navigation step: 1 = Upload, 2 = Trap Check, 3 = Stamping
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
@@ -225,9 +293,14 @@ export default function App() {
   // Flag indicating any AI request in progress
   const isAnyRequestInFlight = isAnalyzing || isRechecking || isGeneratingLetter;
 
+  // Step 2 is locked until user explicitly triggers trap analysis
+  const isStep2Unlocked = Boolean(analysisResult || isAnalyzing || isRechecking);
+
   // Step 3: Stamping and blockchain state
+  const [isStep3Unlocked, setIsStep3Unlocked] = useState<boolean>(false);
   const [isProcessingStamp, setIsProcessingStamp] = useState<boolean>(false);
   const [record, setRecord] = useState<StampedRecord | null>(null);
+  const isStep3Accessible = isStep3Unlocked || Boolean(record);
   const [txError, setTxError] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState<boolean>(false);
   const [copiedCertificate, setCopiedCertificate] = useState<boolean>(false);
@@ -263,6 +336,7 @@ export default function App() {
   const [agreedFileError, setAgreedFileError] = useState<string | null>(null);
   const [isAgreedDragging, setIsAgreedDragging] = useState<boolean>(false);
   const [isRiskWarningModalOpen, setIsRiskWarningModalOpen] = useState<boolean>(false);
+  const [isConfirmReturnHomeOpen, setIsConfirmReturnHomeOpen] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const agreedFileInputRef = useRef<HTMLInputElement>(null);
@@ -300,6 +374,7 @@ export default function App() {
     setOriginalFileName(null);
     setOriginalFileSize(null);
     setReplacementSource(null);
+    setIsStep3Unlocked(false);
 
     const validation = validateContractFile(file);
     if (!validation.valid) {
@@ -395,8 +470,12 @@ export default function App() {
       // 1. Calculate SHA-256 hash of the file
       const fileHash = await calculateFileSha256(fileToAnalyze);
 
-      // 2. Check if result is already cached for this exact file
-      const cached = getAnalysisCache(fileHash);
+      // Business Profile rules summary
+      const userRulesSummary = isProfileFilled ? formatProfileSummary(businessProfile) : '';
+      const cacheKey = userRulesSummary ? `${fileHash}_rules_${encodeURIComponent(userRulesSummary.slice(0, 50))}` : fileHash;
+
+      // 2. Check if result is already cached for this exact file + rules
+      const cached = getAnalysisCache(cacheKey);
       if (cached) {
         setAnalysisResult(cached);
         setExpandedTraps({ 0: true, 1: true });
@@ -408,7 +487,7 @@ export default function App() {
       // 3. Extract text directly on the page (for PDF, DOCX, TXT) or resize image (PNG, JPG)
       const prepared = await prepareFileForAnalysis(fileToAnalyze);
 
-      // 4. Send pure text / resized image to API
+      // 4. Send pure text / resized image to API with user rules
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: {
@@ -419,6 +498,7 @@ export default function App() {
           fileText: prepared.fileText,
           fileBase64: prepared.fileBase64,
           mimeType: prepared.mimeType,
+          userRules: userRulesSummary || undefined,
         }),
       });
 
@@ -432,7 +512,7 @@ export default function App() {
       }
 
       setAnalysisResult(data);
-      setAnalysisCache(fileHash, data);
+      setAnalysisCache(cacheKey, data);
       setExpandedTraps({ 0: true, 1: true });
     } catch (err: any) {
       console.error('Trap check error:', err);
@@ -526,8 +606,25 @@ export default function App() {
     }
   };
 
+  // Direct transition from Step 1 to Step 3 without trap analysis
+  const handleDirectToStamping = () => {
+    if (!selectedFile) {
+      setFileError('Сначала загрузите договор');
+      return;
+    }
+    setIsStep3Unlocked(true);
+    setCurrentStep(3);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   // Navigate to stamping with warning protection if risky contract
   const handleProceedToStamping = () => {
+    if (!selectedFile) {
+      setFileError('Сначала загрузите договор');
+      setCurrentStep(1);
+      return;
+    }
+
     const riskLevel = analysisResult?.риск || analysisResult?.общий_уровень_риска;
     const hasRisks = analysisResult && (
       riskLevel === 'высокий' ||
@@ -539,6 +636,7 @@ export default function App() {
     if (!isAgreedVersion && hasRisks) {
       setIsRiskWarningModalOpen(true);
     } else {
+      setIsStep3Unlocked(true);
       setCurrentStep(3);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -565,6 +663,7 @@ export default function App() {
       setSelectedFile(newDoc);
       setIsAgreedVersion(true);
       setReplacementSource('manual');
+      setIsStep3Unlocked(true);
       setCurrentStep(3);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -862,6 +961,7 @@ export default function App() {
     setLetterText('');
     setTxError(null);
     setFileError(null);
+    setIsStep3Unlocked(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -869,6 +969,24 @@ export default function App() {
       agreedFileInputRef.current.value = '';
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleHeaderLogoClick = () => {
+    const hasProgress = Boolean(
+      selectedFile ||
+      isAnalyzing ||
+      isRechecking ||
+      isGeneratingLetter ||
+      analysisResult ||
+      record ||
+      currentStep > 1
+    );
+
+    if (hasProgress) {
+      setIsConfirmReturnHomeOpen(true);
+    } else {
+      setCurrentStep(1);
+    }
   };
 
   // Calculations in Tenge performed purely by website code
@@ -899,7 +1017,7 @@ export default function App() {
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-18 flex items-center justify-between">
           {/* Logo & Tag */}
           <KelisimLogo 
-            onClick={() => setCurrentStep(1)} 
+            onClick={handleHeaderLogoClick} 
             size="md"
           />
 
@@ -1137,28 +1255,38 @@ export default function App() {
             {/* Step 2 button */}
             <button
               type="button"
+              disabled={!isStep2Unlocked}
               onClick={() => {
-                if (!selectedFile) {
-                  setFileError('Сначала загрузите договор');
-                  setCurrentStep(1);
-                  return;
-                }
-                if (!analysisResult && !isAnalyzing) {
-                  startTrapCheck();
-                } else {
-                  setCurrentStep(2);
-                }
+                if (!isStep2Unlocked) return;
+                setCurrentStep(2);
               }}
               className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
                 currentStep === 2
                   ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
+                  : !isStep2Unlocked
+                  ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
               }`}
+              title={
+                !selectedFile
+                  ? 'Сначала вложите договор на Шаге 1'
+                  : !isStep2Unlocked
+                  ? 'Нажмите «Проверить на ловушки» на Шаге 1, чтобы перейти к проверке'
+                  : 'Перейти к результатам проверки'
+              }
             >
               <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
-                currentStep === 2 ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                currentStep === 2
+                  ? 'bg-emerald-400 text-slate-950'
+                  : !isStep2Unlocked
+                  ? 'bg-slate-900 text-slate-600 border border-slate-800'
+                  : 'bg-slate-800 text-slate-400'
               }`}>
-                2
+                {!isStep2Unlocked ? (
+                  <Lock className="w-2.5 h-2.5 text-slate-600" />
+                ) : (
+                  '2'
+                )}
               </span>
               <span className="truncate">Проверка на ловушки</span>
             </button>
@@ -1166,17 +1294,38 @@ export default function App() {
             {/* Step 3 button */}
             <button
               type="button"
-              onClick={() => setCurrentStep(3)}
+              disabled={!isStep3Accessible}
+              onClick={() => {
+                if (!isStep3Accessible) return;
+                setCurrentStep(3);
+              }}
               className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
                 currentStep === 3
                   ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
+                  : !isStep3Accessible
+                  ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
               }`}
+              title={
+                !selectedFile
+                  ? 'Сначала загрузите договор на Шаге 1'
+                  : !isStep3Accessible
+                  ? 'Вкладка заблокирована. Загрузите файл и нажмите «Перейти к фиксации напрямую» или завершите проверку'
+                  : 'Перейти к фиксации договора'
+              }
             >
               <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
-                currentStep === 3 ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                currentStep === 3
+                  ? 'bg-emerald-400 text-slate-950'
+                  : !isStep3Accessible
+                  ? 'bg-slate-900 text-slate-600 border border-slate-800'
+                  : 'bg-slate-800 text-slate-400'
               }`}>
-                3
+                {!isStep3Accessible ? (
+                  <Lock className="w-2.5 h-2.5 text-slate-600" />
+                ) : (
+                  '3'
+                )}
               </span>
               <span className="truncate">Фиксация</span>
             </button>
@@ -1196,105 +1345,188 @@ export default function App() {
               accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/png,image/jpeg"
             />
 
-            {/* Drag & drop box */}
+            {/* Drag & drop square container */}
             <div
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-xl p-8 sm:p-10 text-center cursor-pointer transition-all ${
+              className={`border-2 border-dashed rounded-2xl p-8 sm:p-12 text-center cursor-pointer transition-all duration-300 ${
                 isDragging
-                  ? 'border-emerald-500 bg-emerald-500/5 scale-[0.99]'
+                  ? 'border-emerald-400 bg-emerald-500/10 scale-[1.01] shadow-[0_0_30px_rgba(16,185,129,0.2)]'
                   : selectedFile
-                  ? 'border-emerald-500/40 bg-emerald-950/10 hover:border-emerald-500/60'
+                  ? 'border-emerald-500/50 bg-emerald-950/15 shadow-[0_0_25px_rgba(16,185,129,0.12)] hover:border-emerald-400/80'
                   : fileError
                   ? 'border-amber-500/60 bg-amber-950/10'
-                  : 'border-slate-700/70 hover:border-slate-600 bg-slate-900/40 hover:bg-slate-900/70'
+                  : 'border-slate-700/80 hover:border-emerald-500/40 bg-slate-900/40 hover:bg-slate-900/70'
               }`}
             >
-              <div className="flex flex-col items-center">
-                <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-4 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
-                  {selectedFile ? (
-                    <FileCheck className="w-7 h-7 text-emerald-400" />
-                  ) : (
-                    <Upload className="w-7 h-7 text-emerald-400" />
-                  )}
-                </div>
+              {selectedFile ? (
+                /* State when file is loaded into the square */
+                <div className="flex flex-col items-center animate-in zoom-in-95 duration-300">
+                  <div className="relative mb-3.5">
+                    <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.25)]">
+                      <FileCheck className="w-8 h-8 text-emerald-400" />
+                    </div>
+                    <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-400 text-slate-950 flex items-center justify-center shadow-md">
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    </div>
+                  </div>
 
-                {selectedFile ? (
-                  <div className="space-y-1">
-                    <p className="font-semibold text-white text-base sm:text-lg break-all">
+                  <div className="space-y-1.5 text-center max-w-md px-2">
+                    <p className="font-bold text-white text-base sm:text-lg break-all">
                       {selectedFile.name}
                     </p>
-                    <p className="text-xs text-slate-400">
-                      Размер: {formatFileSize(selectedFile.size)} · Готов к проверке
-                    </p>
-                    <p className="text-xs text-emerald-400 pt-1">
+                    <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
+                      <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700 font-mono uppercase text-[11px]">
+                        {selectedFile.name.split('.').pop() || 'FILE'}
+                      </span>
+                      <span className="text-slate-400 font-mono">
+                        {formatFileSize(selectedFile.size)}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-emerald-400 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Файл готов к обработке
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex items-center gap-3 text-xs">
+                    <span className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 transition-colors">
                       Нажмите, чтобы заменить файл
-                    </p>
+                    </span>
+                    <span className="text-slate-600">·</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedFile(null);
+                        setAnalysisResult(null);
+                        setFileError(null);
+                        setIsStep3Unlocked(false);
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                      }}
+                      className="text-slate-400 hover:text-rose-400 transition-colors"
+                    >
+                      Удалить
+                    </button>
                   </div>
-                ) : (
-                  <div className="space-y-2">
-                    <p className="font-semibold text-white text-base">
-                      Перетащите файл договора сюда или нажмите для выбора
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      Поддерживаются PDF, DOCX, TXT, PNG, JPG до 4 МБ
-                    </p>
+                </div>
+              ) : (
+                /* State before file is loaded into the square */
+                <div className="flex flex-col items-center">
+                  <div className="relative mb-4 group-hover:scale-105 transition-transform duration-300">
+                    <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-[0_0_25px_rgba(16,185,129,0.12)]">
+                      <Upload className="w-8 h-8 text-emerald-400" />
+                    </div>
+                    <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center text-slate-400">
+                      <FileText className="w-3.5 h-3.5 text-slate-300" />
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  <div className="space-y-2 max-w-sm">
+                    <p className="font-bold text-white text-base sm:text-lg">
+                      Перетащите файл договора сюда
+                    </p>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      или нажмите для выбора на компьютере или смартфоне
+                    </p>
+                    <div className="pt-2 flex flex-wrap items-center justify-center gap-1.5 text-[11px] text-slate-500">
+                      <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">PDF</span>
+                      <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">DOCX</span>
+                      <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">TXT</span>
+                      <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">PNG / JPG</span>
+                      <span className="text-slate-500">до 4 МБ</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Clear file button if selected */}
-            {selectedFile && (
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedFile(null);
-                    setAnalysisResult(null);
-                    setFileError(null);
-                    if (fileInputRef.current) fileInputRef.current.value = '';
-                  }}
-                  className="text-xs text-slate-400 hover:text-rose-300 underline underline-offset-2 transition-colors"
-                >
-                  Удалить файл
-                </button>
+            {/* Hint shown only before file upload */}
+            {!selectedFile && (
+              <div className="mt-5 p-3.5 rounded-xl bg-slate-900/50 border border-slate-800 text-xs text-slate-400 flex items-center justify-center gap-2.5 text-center">
+                <Info className="w-4 h-4 text-emerald-400/80 shrink-0" />
+                <span>Загрузите договор — после загрузки появятся кнопки выбора: экспресс-проверка ИИ или прямая фиксация в Solana.</span>
               </div>
             )}
 
-            {/* Action Buttons for Step 1 */}
-            <div className="mt-6 space-y-3">
-              <button
-                type="button"
-                onClick={() => startTrapCheck()}
-                disabled={isAnyRequestInFlight}
-                className="w-full relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 disabled:opacity-75 disabled:cursor-not-allowed"
-              >
-                <ShieldAlert className="w-5 h-5 text-slate-950" />
-                <span>Проверить на ловушки</span>
-                <ArrowRight className="w-4 h-4 ml-1" />
-              </button>
+            {/* Action Buttons for Step 1: beautifully animate in once file is loaded */}
+            {selectedFile && (
+              <div className="mt-6 pt-5 border-t border-slate-800/80 space-y-3.5 animate-in fade-in slide-in-from-bottom-5 duration-500 ease-out fill-mode-both">
+                <div className="flex items-center justify-between text-xs px-1">
+                  <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
+                    <span>Выберите дальнейшее действие:</span>
+                  </span>
+                  <span className="text-[11px] text-emerald-400/80 font-medium hidden sm:inline">
+                    Документ готов к обработке
+                  </span>
+                </div>
 
-              <div className="text-center pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!selectedFile) {
-                      setFileError('Сначала загрузите договор');
-                      return;
-                    }
-                    setCurrentStep(3);
-                  }}
-                  className="text-xs text-slate-400 hover:text-slate-200 transition-colors inline-flex items-center gap-1.5"
-                >
-                  <Lock className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Или перейти сразу к фиксации договора</span>
-                </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  {/* Button 1: Check traps (AI Analysis) */}
+                  <button
+                    type="button"
+                    onClick={() => startTrapCheck()}
+                    disabled={isAnyRequestInFlight}
+                    className="group relative p-4 sm:p-5 rounded-2xl bg-gradient-to-b from-emerald-500/20 via-emerald-950/25 to-slate-950 border-2 border-emerald-500/50 hover:border-emerald-400 text-left transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] shadow-[0_0_25px_rgba(16,185,129,0.18)] hover:shadow-[0_0_35px_rgba(16,185,129,0.35)] disabled:opacity-75 disabled:cursor-not-allowed flex flex-col justify-between"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-400 text-slate-950 flex items-center justify-center font-bold shadow-md group-hover:scale-105 transition-transform">
+                          <ShieldAlert className="w-5 h-5 text-slate-950" />
+                        </div>
+                        <span className="text-[11px] font-semibold text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                          Рекомендуется
+                        </span>
+                      </div>
+                      <div className="font-bold text-white text-sm sm:text-base group-hover:text-emerald-300 transition-colors flex items-center gap-1.5">
+                        <span>Проверить на ловушки</span>
+                        <ArrowRight className="w-4 h-4 text-emerald-400 transition-transform group-hover:translate-x-1" />
+                      </div>
+                      <p className="text-xs text-slate-300/85 mt-1.5 leading-relaxed">
+                        ИИ просканирует договор за 5 секунд, выявит скрытые риски, кабальные штрафы и неравные условия.
+                      </p>
+                    </div>
+                    <div className="mt-3.5 pt-2.5 border-t border-emerald-500/20 flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Экспресс-анализ ИИ · Бесплатно</span>
+                    </div>
+                  </button>
+
+                  {/* Button 2: Direct to Stamping */}
+                  <button
+                    type="button"
+                    onClick={handleDirectToStamping}
+                    disabled={isAnyRequestInFlight}
+                    className="group relative p-4 sm:p-5 rounded-2xl bg-[#0e141a] hover:bg-slate-900 border-2 border-slate-700/80 hover:border-emerald-500/50 text-left transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] shadow-lg disabled:opacity-75 disabled:cursor-not-allowed flex flex-col justify-between"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <div className="w-10 h-10 rounded-xl bg-slate-800 text-emerald-400 border border-slate-700 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
+                          <Lock className="w-5 h-5" />
+                        </div>
+                        <span className="text-[11px] font-medium text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700">
+                          Без проверки
+                        </span>
+                      </div>
+                      <div className="font-bold text-white text-sm sm:text-base group-hover:text-emerald-300 transition-colors flex items-center gap-1.5">
+                        <span>Перейти к фиксации напрямую</span>
+                        <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-400 transition-transform group-hover:translate-x-1" />
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                        Сразу перейти к шагу 3 и сохранить неизменяемый SHA-256 отпечаток договора в реестре Solana devnet.
+                      </p>
+                    </div>
+                    <div className="mt-3.5 pt-2.5 border-t border-slate-800 flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
+                      <Database className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span>Прямая запись в блокчейн Solana</span>
+                    </div>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -1414,22 +1646,65 @@ export default function App() {
 
             {/* If not analyzed yet and no error */}
             {!isAnalyzing && !isRechecking && !analysisError && !analysisResult && (
-              <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-10 text-center shadow-xl space-y-4">
-                <FileSearch className="w-12 h-12 text-slate-600 mx-auto" />
-                <h3 className="text-lg font-bold text-white">
-                  Анализ договора не запущен
-                </h3>
-                <p className="text-xs text-slate-400 max-w-md mx-auto">
-                  Загрузите договор на Шаге 1 и нажмите кнопку «Проверить на ловушки». Все результаты появятся только из реального анализа вашего документа.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setCurrentStep(1)}
-                  className="px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all inline-flex items-center gap-2"
-                >
-                  <Upload className="w-4 h-4" />
-                  <span>Перейти к загрузке</span>
-                </button>
+              <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-8 sm:p-10 text-center shadow-xl space-y-5 animate-in fade-in duration-200">
+                <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mx-auto">
+                  <FileSearch className="w-7 h-7 text-emerald-400" />
+                </div>
+                <div className="space-y-2 max-w-md mx-auto">
+                  <h3 className="text-lg sm:text-xl font-bold text-white">
+                    {selectedFile ? 'Документ готов к проверке на ловушки' : 'Договор пока не загружен'}
+                  </h3>
+                  {selectedFile ? (
+                    <div className="space-y-1">
+                      <p className="text-xs sm:text-sm text-slate-300">
+                        Вложен документ: <span className="text-emerald-300 font-semibold break-all">{selectedFile.name}</span> ({formatFileSize(selectedFile.size)})
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        Анализ запускается только по вашей команде. Нажмите кнопку ниже, чтобы начать проверку.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Сначала выберите файл договора на Шаге 1.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                  {selectedFile ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => startTrapCheck()}
+                        disabled={isAnyRequestInFlight}
+                        className="w-full sm:w-auto px-6 py-3 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)] disabled:opacity-75 cursor-pointer"
+                      >
+                        <ShieldAlert className="w-4 h-4 text-slate-950" />
+                        <span>Проверить на ловушки</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCurrentStep(3);
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className="w-full sm:w-auto px-5 py-3 rounded-xl text-xs sm:text-sm bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:text-white transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <Lock className="w-4 h-4 text-slate-400" />
+                        <span>Перейти сразу к фиксации</span>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStep(1)}
+                      className="px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>Перейти к загрузке</span>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1586,40 +1861,24 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Actions & Risk Badge: Red for high, Yellow for medium, Green for low */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setStagedAgreedFile(null);
-                          setAgreedFileError(null);
-                          setIsAgreedUploadModalOpen(true);
-                        }}
-                        className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center gap-1.5 shadow-sm"
-                        title="Загрузить согласованную или исправленную версию документа"
-                      >
-                        <Upload className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Загрузить согласованную версию</span>
-                      </button>
-
-                      <div>
-                        {analysisResult.общий_уровень_риска === 'высокий' ? (
-                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
-                            <AlertCircle className="w-4 h-4" />
-                            <span>Уровень риска: Высокий</span>
-                          </div>
-                        ) : analysisResult.общий_уровень_риска === 'средний' ? (
-                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25">
-                            <AlertTriangle className="w-4 h-4" />
-                            <span>Уровень риска: Средний</span>
-                          </div>
-                        ) : (
-                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>Уровень риска: Низкий</span>
-                          </div>
-                        )}
-                      </div>
+                    {/* Risk Badge: Red for high, Yellow for medium, Green for low */}
+                    <div>
+                      {analysisResult.общий_уровень_риска === 'высокий' ? (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
+                          <AlertCircle className="w-4 h-4" />
+                          <span>Уровень риска: Высокий</span>
+                        </div>
+                      ) : analysisResult.общий_уровень_риска === 'средний' ? (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25">
+                          <AlertTriangle className="w-4 h-4" />
+                          <span>Уровень риска: Средний</span>
+                        </div>
+                      ) : (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Уровень риска: Низкий</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2667,22 +2926,17 @@ export default function App() {
             <div className="pt-2 flex flex-col gap-2.5">
               <button
                 type="button"
-                onClick={() => {
-                  setIsRiskWarningModalOpen(false);
-                  setStagedAgreedFile(null);
-                  setAgreedFileError(null);
-                  setIsAgreedUploadModalOpen(true);
-                }}
-                className="w-full py-3 px-4 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs sm:text-sm transition-all shadow-[0_0_20px_rgba(16,185,129,0.25)] flex items-center justify-center gap-2"
+                onClick={() => setIsRiskWarningModalOpen(false)}
+                className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-sm"
               >
-                <Upload className="w-4 h-4 text-slate-950" />
-                <span>Загрузить исправленную версию</span>
+                <span>Вернуться</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => {
                   setIsRiskWarningModalOpen(false);
+                  setIsStep3Unlocked(true);
                   setCurrentStep(3);
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
@@ -2907,11 +3161,61 @@ export default function App() {
         </div>
       )}
 
+      {/* MODAL: Подтверждение возврата на главную («Вернуться на главную? Текущий прогресс будет потерян») */}
+      {isConfirmReturnHomeOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0e141a] border border-amber-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl relative flex flex-col space-y-4 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <h3 className="text-base font-bold text-white leading-snug">
+                  Вернуться на главную? Текущий прогресс будет потерян
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsConfirmReturnHomeOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                title="Закрыть"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              Загруженный документ, результаты анализа и текущий шаг будут сброшены. Вы уверены, что хотите выйти на главный экран?
+            </p>
+
+            <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsConfirmReturnHomeOpen(false)}
+                className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs sm:text-sm transition-all"
+              >
+                Остаться
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsConfirmReturnHomeOpen(false);
+                  handleResetAll();
+                }}
+                className="py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs sm:text-sm transition-all shadow-sm"
+              >
+                Вернуться
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       <footer className="relative z-10 border-t border-slate-800/60 bg-[#070a0d] py-6">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400">
           <div className="flex items-center gap-3">
-            <KelisimLogo size="sm" showSubtitle={false} onClick={() => setCurrentStep(1)} />
+            <KelisimLogo size="sm" showSubtitle={false} interactive={false} />
             <span className="hidden sm:inline">·</span>
             <span className="hidden sm:inline">Проверка и фиксация договоров в блокчейне Solana</span>
           </div>

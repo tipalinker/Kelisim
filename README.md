@@ -1,91 +1,85 @@
 # Kelisim
 
-**What it does:** Analyzes commercial contracts for hidden risk traps and anchors immutable SHA-256 document fingerprints onto the Solana blockchain.
+> **Intelligent contract risk mitigation & tamper-proof blockchain notarization.**
 
-**Target audience:** Small and medium-sized business owners, entrepreneurs, and tenants who negotiate agreements without in-house legal teams.
-
-**Solana Devnet Record:** Cryptographic SHA-256 hash formatted as `Kelisim v1 | sha256:<hash>` recorded via the SPL Memo program to provide tamper-proof proof-of-existence without exposing confidential contract contents.
+Kelisim protects **small businesses, entrepreneurs, and lawyers** during contract negotiations by detecting hidden legal traps, generating ready-to-send counterparty negotiation letters, and anchoring immutable cryptographic document fingerprints directly onto the **Solana blockchain**.
 
 ---
 
 ## Problem
 
-- **Hidden Contract Traps:** Commercial agreements (leases, supplier contracts, service agreements) routinely include predatory clauses such as unilateral fee increases, disproportionate penalties, and automatic lock-ins.
-- **Prohibitive Legal Costs:** Hiring contract lawyers for every draft revision is slow and expensive for small businesses and solo founders.
-- **Post-Signing Alterations & Disputes:** Counterparties often dispute which draft was finalized or claim that clauses were modified after signing.
+- **Hidden Legal Traps:** Commercial agreements (commercial leases, vendor agreements, supply contracts) frequently conceal one-sided risks — uncapped liability, unilateral price revisions, automatic lock-ins, and asymmetric termination penalties.
+- **High Legal Overhead & Delays:** Small businesses and founders often cannot afford dedicated legal counsel for every revision, while busy lawyers spend excessive hours auditing standard boilerplate text.
+- **Draft Disputes & Post-Signing Tampering:** Disagreements routinely arise over which draft version was approved, with counterparties altering subtle wording before signing or denying prior agreements.
 
 ---
 
 ## Solution
 
-- **Automated Clause Risk Assessment:** Identifies predatory clauses, estimates potential monetary exposure in Kazakhstani tenge (₸), and provides concrete revision recommendations.
-- **Counterparty Letter Generator:** Generates structured, polite counter-proposals with balanced compromise terms ready to send to counterparties.
-- **Client-Side SHA-256 Stamping:** Computes document hashes locally in the browser so confidential business terms never leave the user's device.
-- **Verifiable Proof-of-Existence Certificate:** Produces a downloadable, tamper-evident digital certificate with transaction signature, timestamp, and Solana Explorer link.
+1. **Trap Detection & Risk Scoring:** Instantly flags predatory terms, ranks risk severity, and estimates potential financial exposure.
+2. **Counterparty Response Generator:** Drafts professional, legally sound counter-proposals and negotiation letters with balanced compromise terms.
+3. **Zero-Knowledge SHA-256 Hashing:** Computes the document's 256-bit cryptographic digest entirely client-side; confidential business terms and personal data never leave the browser.
+4. **Verifiable Proof-of-Existence Certificate:** Generates a downloadable proof certificate containing the Solana transaction signature, block timestamp, and direct Solana Explorer verification link.
 
 ---
 
 ## How it uses Solana
 
-- **Network:** Solana Devnet.
-- **Program:** [SPL Memo Program](https://spl.solana.com/memo) (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`).
-- **On-chain record:**
-  ```text
-  Kelisim v1 | sha256:<64_character_hex_hash>
-  ```
-- **Why Solana:**
-  - **Zero Privacy Leakage:** Confidential terms, names, and pricing stay completely private; only the one-way cryptographic SHA-256 digest is published.
-  - **Tamper-Evident Timestamp:** Records immutable proof that this exact document existed at a specific block time.
-  - **Independent Verification:** Anyone can independently verify contract authenticity via Solana Explorer without relying on centralized servers.
-  - **Fast & Inexpensive:** Sub-second confirmation and near-zero transaction fees signed via Phantom Wallet.
+### What is Recorded On-Chain
+Kelisim writes a standardized cryptographic record via the native [SPL Memo Program](https://spl.solana.com/memo) (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`) on **Solana Devnet**:
+
+```text
+Kelisim v1 | sha256:<64-character-hex-digest>
+```
+
+### Why Solana & On-Chain Hashing?
+- **100% Privacy by Design:** The contract's contents, parties, and figures are never broadcast to the ledger. Only the one-way SHA-256 mathematical hash is published.
+- **Immutable Proof of Existence (PoE):** Anchors an unalterable timestamp and block height, proving the exact contract draft existed in that specific form at that precise second.
+- **Zero Ambiguity in Disputes:** Altering a single comma, digit, or appendix generates a completely different hash. Counterparties can never substitute pages or claim post-hoc changes.
+- **Trustless & Independent Verification:** Anyone can independently verify the contract draft on Solana Explorer in under a second — with no dependency on Kelisim's servers, private databases, or trusted third parties.
+- **Speed & Negligible Cost:** Solana’s 400ms slot times and fraction-of-a-cent fees make notarization instantaneous via Phantom Wallet.
 
 ---
 
 ## How to run
 
 ### Prerequisites
-
 - [Node.js](https://nodejs.org/) (v18+) or [Bun](https://bun.sh/)
-- [Phantom Wallet](https://phantom.app/) browser extension set to **Solana Devnet** with test SOL from [solfaucet.com](https://solfaucet.com/)
+- [Phantom Wallet](https://phantom.app/) browser extension configured to **Solana Devnet** (with free test SOL from [solfaucet.com](https://solfaucet.com/))
 
-### Setup & Launch
+### Installation & Development
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repo-url>
-   cd kelisim
-   ```
+```bash
+# 1. Clone the repository
+git clone <repo-url>
+cd kelisim
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   # or
-   bun install
-   ```
+# 2. Install dependencies
+npm install
+# or: bun install
 
-3. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Add your GEMINI_API_KEY if testing AI contract analysis
-   ```
+# 3. Configure environment variables
+cp .env.example .env
+# Set GEMINI_API_KEY in .env for AI contract analysis
 
-4. **Start the development server:**
-   ```bash
-   npm run dev
-   ```
-   Open `http://localhost:3000` in your browser.
+# 4. Start local development server
+npm run dev
+```
 
-5. **Build for production:**
-   ```bash
-   npm run build
-   ```
+Visit `http://localhost:3000` in your browser.
+
+### Production Build
+
+```bash
+npm run build
+```
 
 ---
 
 ## Team
 
 - **Rasim Musayev** — Founder & Lead Developer
-- **Fatima Panabek** — Generalist & Operations
-- **Bagdan Orynbassar** — Generalist & Product
-- **Alisher Balgaliy** — Generalist & Frontend
-- **Nurzhigit Kairatuly** — Generalist & Legal Domain
+- **Fatima Panabek** — Operations & Legal Strategy
+- **Bagdan Orynbassar** — Product & Analytics
+- **Alisher Balgaliy** — Frontend Engineering
+- **Nurzhigit Kairatuly** — Legal Domain & Compliance

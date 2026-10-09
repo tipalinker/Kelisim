@@ -54,6 +54,12 @@ export interface RecheckData {
   прогресс: RecheckProgress;
 }
 
+export interface RuleViolation {
+  пункт: string;
+  правило: string;
+  что_в_договоре: string;
+}
+
 export interface GeminiContractAnalysis {
   риск?: RiskLevel;
   общий_уровень_риска: RiskLevel;
@@ -63,6 +69,7 @@ export interface GeminiContractAnalysis {
   числа: ExtractedNumbers;
   важные_сроки?: ImportantDate[];
   вопросы_юристу?: string[];
+  нарушения_правил?: RuleViolation[];
   recheckData?: RecheckData | null;
   error?: string | null;
 }

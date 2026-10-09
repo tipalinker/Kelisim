@@ -6,6 +6,7 @@ interface KelisimLogoProps {
   showSubtitle?: boolean;
   className?: string;
   onClick?: () => void;
+  interactive?: boolean;
 }
 
 export const KelisimLogo: React.FC<KelisimLogoProps> = ({
@@ -13,9 +14,12 @@ export const KelisimLogo: React.FC<KelisimLogoProps> = ({
   showSubtitle = true,
   className = '',
   onClick,
+  interactive,
 }) => {
   const [imageFailed, setImageFailed] = useState(false);
   const [currentSrc, setCurrentSrc] = useState(shieldLogoImg);
+
+  const isInteractive = interactive !== undefined ? interactive : Boolean(onClick);
 
   const iconDimensions = {
     sm: 'w-8 h-8',
@@ -48,21 +52,35 @@ export const KelisimLogo: React.FC<KelisimLogoProps> = ({
 
   return (
     <div
-      onClick={onClick}
-      className={`inline-flex items-center gap-3 select-none ${onClick ? 'cursor-pointer group' : ''} ${className}`}
+      onClick={isInteractive ? onClick : undefined}
+      className={`inline-flex items-center gap-3 select-none ${
+        isInteractive ? 'cursor-pointer group' : 'cursor-default pointer-events-none select-none'
+      } ${className}`}
     >
       {/* Shield Logo Emblem */}
       <div className="relative">
         {/* Ambient neon glow behind shield */}
-        <div className="absolute -inset-1 rounded-2xl bg-gradient-to-tr from-emerald-500/20 via-teal-400/25 to-cyan-500/20 blur-md opacity-75 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
+        <div
+          className={`absolute -inset-1 rounded-2xl bg-gradient-to-tr from-emerald-500/20 via-teal-400/25 to-cyan-500/20 blur-md opacity-75 pointer-events-none ${
+            isInteractive ? 'group-hover:opacity-100 transition-opacity duration-300' : ''
+          }`}
+        />
         
-        <div className={`relative ${iconDimensions} rounded-xl overflow-hidden bg-[#0c1217] border border-emerald-500/40 p-0.5 shadow-[0_0_20px_rgba(16,185,129,0.2)] group-hover:border-emerald-400 group-hover:shadow-[0_0_25px_rgba(45,212,191,0.35)] transition-all duration-300 flex items-center justify-center`}>
+        <div
+          className={`relative ${iconDimensions} rounded-xl overflow-hidden bg-[#0c1217] border border-emerald-500/40 p-0.5 shadow-[0_0_20px_rgba(16,185,129,0.2)] ${
+            isInteractive
+              ? 'group-hover:border-emerald-400 group-hover:shadow-[0_0_25px_rgba(45,212,191,0.35)] transition-all duration-300'
+              : ''
+          } flex items-center justify-center`}
+        >
           {!imageFailed ? (
             <img
               src={currentSrc}
               alt="Kelisim Logo"
               onError={handleImageError}
-              className="w-full h-full object-cover rounded-lg transform scale-105 group-hover:scale-110 transition-transform duration-300"
+              className={`w-full h-full object-cover rounded-lg transform scale-105 ${
+                isInteractive ? 'group-hover:scale-110 transition-transform duration-300' : ''
+              }`}
               loading="eager"
             />
           ) : (
