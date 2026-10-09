@@ -224,6 +224,8 @@ function readFileAsText(file: File): Promise<string> {
 export default function App() {
   // Navigation mode: 'audit' (standard 3-step workflow) vs 'verify' (check document without wallet)
   const [activeMode, setActiveMode] = useState<'audit' | 'verify'>('audit');
+  const [isVerifyingDocument, setIsVerifyingDocument] = useState<boolean>(false);
+  const [blockedTabNotice, setBlockedTabNotice] = useState<string | null>(null);
 
   // Business Profile state (persisted in localStorage with try/catch)
   const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => {
@@ -340,6 +342,25 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const agreedFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Active execution state checks across tabs and processes
+  const isAuditRunning = isAnalyzing || isRechecking || isGeneratingLetter;
+  const isFixationRunning = isProcessingStamp;
+  const isVerificationRunning = isVerifyingDocument;
+
+  // Tab blocking rules (prevent switching during active execution to avoid state loss/race conditions)
+  const isVerifyTabDisabled = isAuditRunning || isFixationRunning;
+  const isAuditTabDisabled = isVerificationRunning;
+  const isAnyExecutionRunning = isAuditRunning || isFixationRunning || isVerificationRunning;
+
+  // Auto-dismiss blocked tab notification after 5 seconds
+  useEffect(() => {
+    if (!blockedTabNotice) return;
+    const timer = setTimeout(() => {
+      setBlockedTabNotice(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [blockedTabNotice]);
 
   // Save blockchain records to localStorage
   useEffect(() => {
@@ -972,6 +993,10 @@ export default function App() {
   };
 
   const handleHeaderLogoClick = () => {
+    if (isAnyExecutionRunning) {
+      setBlockedTabNotice('Действие заблокировано: дождитесь завершения текущей операции (анализ / фиксация / проверка).');
+      return;
+    }
     const hasProgress = Boolean(
       selectedFile ||
       isAnalyzing ||
@@ -987,6 +1012,39 @@ export default function App() {
     } else {
       setCurrentStep(1);
     }
+  };
+
+  const handleTabClick = (targetMode: 'audit' | 'verify') => {
+    if (targetMode === 'verify' && isVerifyTabDisabled) {
+      const reason = isFixationRunning
+        ? 'Нельзя перейти во вкладку «Проверить документ»: выполняется фиксация файла в блокчейне Solana. Дождитесь подтверждения транзакции во избежание сбоев.'
+        : 'Нельзя перейти во вкладку «Проверить документ»: выполняется аудит договора. Дождитесь окончания анализа во избежание сбоев.';
+      setBlockedTabNotice(reason);
+      return;
+    }
+    if (targetMode === 'audit' && isAuditTabDisabled) {
+      setBlockedTabNotice(
+        'Нельзя перейти во вкладку «Аудит и фиксация»: прямо сейчас выполняется проверка документа в Solana devnet. Дождитесь завершения проверки во избежание сбоев.'
+      );
+      return;
+    }
+    setBlockedTabNotice(null);
+    setActiveMode(targetMode);
+  };
+
+  const handleStepClick = (step: 1 | 2 | 3) => {
+    if (isAuditRunning) {
+      setBlockedTabNotice('Переход между шагами заблокирован: выполняется анализ договора. Дождитесь завершения.');
+      return;
+    }
+    if (isFixationRunning) {
+      setBlockedTabNotice('Переход между шагами заблокирован: транзакция фиксации отправляется в блокчейн Solana.');
+      return;
+    }
+    setBlockedTabNotice(null);
+    if (step === 2 && !isStep2Unlocked) return;
+    if (step === 3 && !isStep3Accessible) return;
+    setCurrentStep(step);
   };
 
   // Calculations in Tenge performed purely by website code
@@ -1231,144 +1289,236 @@ export default function App() {
           </div>
         )}
 
+        {/* Blocked tab attempt notice banner */}
+        {blockedTabNotice && (
+          <div className="mb-6 mx-auto max-w-xl p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200 flex items-start justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-200 shadow-lg">
+            <div className="flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-amber-300">Вход во вкладку временно недоступен:</span>
+                <p className="mt-0.5 text-amber-200/90 leading-relaxed">{blockedTabNotice}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setBlockedTabNotice(null)}
+              className="text-amber-400 hover:text-white p-0.5 shrink-0"
+              title="Закрыть уведомление"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Active execution status bar indicator */}
+        {isAnyExecutionRunning && !blockedTabNotice && (
+          <div className="mb-6 mx-auto max-w-xl px-4 py-2.5 rounded-xl bg-slate-900/90 border border-amber-500/30 text-xs text-slate-300 flex items-center justify-between gap-3 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2.5">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+              </span>
+              <span className="text-slate-200 font-medium">
+                {isFixationRunning
+                  ? 'Идёт фиксация файла в Solana: переключение вкладок заблокировано'
+                  : isAuditRunning
+                  ? 'Идёт аудит договора: переключение вкладок заблокировано'
+                  : 'Идёт проверка документа: переключение вкладок заблокировано'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+              <Lock className="w-3 h-3 text-amber-400" />
+              <span>Защита</span>
+            </div>
+          </div>
+        )}
+
         {/* Main Mode Switcher: «Аудит и фиксация» vs «Проверить документ» (без кошелька) */}
         <div className="flex items-center justify-center mb-8">
           <div className="p-1 bg-[#0f141a] border border-slate-800 rounded-2xl inline-flex gap-1.5 shadow-lg">
             <button
               type="button"
-              onClick={() => setActiveMode('audit')}
+              disabled={isAuditTabDisabled}
+              onClick={() => handleTabClick('audit')}
+              aria-disabled={isAuditTabDisabled}
               className={`px-4 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
-                activeMode === 'audit'
+                isAuditTabDisabled
+                  ? 'text-slate-600 bg-slate-900/40 cursor-not-allowed opacity-50 select-none'
+                  : activeMode === 'audit'
                   ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm'
                   : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
               }`}
+              title={
+                isAuditTabDisabled
+                  ? 'Вкладка недоступна: выполняется проверка документа в Solana. Дождитесь завершения во избежание сбоев.'
+                  : 'Аудит и фиксация договора'
+              }
             >
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              {isAuditTabDisabled ? (
+                <Lock className="w-4 h-4 text-amber-400/80" />
+              ) : (
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              )}
               <span>Аудит и фиксация</span>
+              {isAuditTabDisabled && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-medium border border-amber-500/25">
+                  Заблокировано
+                </span>
+              )}
             </button>
+
             <button
               type="button"
-              onClick={() => setActiveMode('verify')}
+              disabled={isVerifyTabDisabled}
+              onClick={() => handleTabClick('verify')}
+              aria-disabled={isVerifyTabDisabled}
               className={`px-4 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
-                activeMode === 'verify'
+                isVerifyTabDisabled
+                  ? 'text-slate-600 bg-slate-900/40 cursor-not-allowed opacity-50 select-none'
+                  : activeMode === 'verify'
                   ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm'
                   : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
               }`}
+              title={
+                isFixationRunning
+                  ? 'Вкладка недоступна: выполняется фиксация файла в блокчейне Solana. Дождитесь подтверждения транзакции.'
+                  : isAuditRunning
+                  ? 'Вкладка недоступна: выполняется аудит договора. Дождитесь завершения анализа.'
+                  : 'Проверить документ без подключения кошелька'
+              }
             >
-              <FileSearch className="w-4 h-4 text-emerald-400" />
+              {isVerifyTabDisabled ? (
+                <Lock className="w-4 h-4 text-amber-400/80" />
+              ) : (
+                <FileSearch className="w-4 h-4 text-emerald-400" />
+              )}
               <span>Проверить документ</span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-medium border border-emerald-500/30">
-                без кошелька
-              </span>
+              {isVerifyTabDisabled ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-medium border border-amber-500/25">
+                  {isFixationRunning ? 'Идёт фиксация…' : 'Идёт аудит…'}
+                </span>
+              ) : (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-medium border border-emerald-500/30">
+                  без кошелька
+                </span>
+              )}
             </button>
           </div>
         </div>
 
         {/* MODE: ПРОВЕРКА ДОКУМЕНТА БЕЗ КОШЕЛЬКА */}
         {activeMode === 'verify' ? (
-          <DocumentVerification />
+          <DocumentVerification onVerifyingChange={setIsVerifyingDocument} />
         ) : (
           <>
             {/* 3-Step Indicator Bar */}
             <div className="mb-8 bg-[#0f141a] border border-slate-800/90 rounded-2xl p-2 sm:p-3 shadow-lg">
-          <div className="grid grid-cols-3 gap-1 sm:gap-2 text-xs">
-            {/* Step 1 button */}
-            <button
-              type="button"
-              onClick={() => setCurrentStep(1)}
-              className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
-                currentStep === 1
-                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
-              }`}
-            >
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
-                currentStep === 1 ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-400'
-              }`}>
-                1
-              </span>
-              <span className="truncate">Загрузка</span>
-            </button>
+              <div className="grid grid-cols-3 gap-1 sm:gap-2 text-xs">
+                {/* Step 1 button */}
+                <button
+                  type="button"
+                  disabled={isAuditRunning || isFixationRunning}
+                  onClick={() => handleStepClick(1)}
+                  className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
+                    isAuditRunning || isFixationRunning
+                      ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
+                      : currentStep === 1
+                      ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                  }`}
+                  title={
+                    isAuditRunning
+                      ? 'Переход заблокирован: выполняется анализ договора'
+                      : isFixationRunning
+                      ? 'Переход заблокирован: выполняется фиксация в блокчейне'
+                      : 'Шаг 1: Загрузка документа'
+                  }
+                >
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
+                    currentStep === 1 ? 'bg-emerald-400 text-slate-950' : (isAuditRunning || isFixationRunning) ? 'bg-slate-900 text-slate-600' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {isAuditRunning || isFixationRunning ? <Lock className="w-2.5 h-2.5 text-slate-600" /> : '1'}
+                  </span>
+                  <span className="truncate">Загрузка</span>
+                </button>
 
-            {/* Step 2 button */}
-            <button
-              type="button"
-              disabled={!isStep2Unlocked}
-              onClick={() => {
-                if (!isStep2Unlocked) return;
-                setCurrentStep(2);
-              }}
-              className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
-                currentStep === 2
-                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
-                  : !isStep2Unlocked
-                  ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
-              }`}
-              title={
-                !selectedFile
-                  ? 'Сначала вложите договор на Шаге 1'
-                  : !isStep2Unlocked
-                  ? 'Нажмите «Проверить на ловушки» на Шаге 1, чтобы перейти к проверке'
-                  : 'Перейти к результатам проверки'
-              }
-            >
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
-                currentStep === 2
-                  ? 'bg-emerald-400 text-slate-950'
-                  : !isStep2Unlocked
-                  ? 'bg-slate-900 text-slate-600 border border-slate-800'
-                  : 'bg-slate-800 text-slate-400'
-              }`}>
-                {!isStep2Unlocked ? (
-                  <Lock className="w-2.5 h-2.5 text-slate-600" />
-                ) : (
-                  '2'
-                )}
-              </span>
-              <span className="truncate">Проверка на ловушки</span>
-            </button>
+                {/* Step 2 button */}
+                <button
+                  type="button"
+                  disabled={!isStep2Unlocked || isFixationRunning}
+                  onClick={() => handleStepClick(2)}
+                  className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
+                    currentStep === 2
+                      ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
+                      : (!isStep2Unlocked || isFixationRunning)
+                      ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                  }`}
+                  title={
+                    isFixationRunning
+                      ? 'Переход заблокирован: выполняется фиксация в блокчейне'
+                      : !selectedFile
+                      ? 'Сначала вложите договор на Шаге 1'
+                      : !isStep2Unlocked
+                      ? 'Нажмите «Проверить на ловушки» на Шаге 1, чтобы перейти к проверке'
+                      : 'Перейти к результатам проверки'
+                  }
+                >
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
+                    currentStep === 2
+                      ? 'bg-emerald-400 text-slate-950'
+                      : (!isStep2Unlocked || isFixationRunning)
+                      ? 'bg-slate-900 text-slate-600 border border-slate-800'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {!isStep2Unlocked || isFixationRunning ? (
+                      <Lock className="w-2.5 h-2.5 text-slate-600" />
+                    ) : (
+                      '2'
+                    )}
+                  </span>
+                  <span className="truncate">Проверка на ловушки</span>
+                </button>
 
-            {/* Step 3 button */}
-            <button
-              type="button"
-              disabled={!isStep3Accessible}
-              onClick={() => {
-                if (!isStep3Accessible) return;
-                setCurrentStep(3);
-              }}
-              className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
-                currentStep === 3
-                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
-                  : !isStep3Accessible
-                  ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
-              }`}
-              title={
-                !selectedFile
-                  ? 'Сначала загрузите договор на Шаге 1'
-                  : !isStep3Accessible
-                  ? 'Вкладка заблокирована. Загрузите файл и нажмите «Перейти к фиксации напрямую» или завершите проверку'
-                  : 'Перейти к фиксации договора'
-              }
-            >
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
-                currentStep === 3
-                  ? 'bg-emerald-400 text-slate-950'
-                  : !isStep3Accessible
-                  ? 'bg-slate-900 text-slate-600 border border-slate-800'
-                  : 'bg-slate-800 text-slate-400'
-              }`}>
-                {!isStep3Accessible ? (
-                  <Lock className="w-2.5 h-2.5 text-slate-600" />
-                ) : (
-                  '3'
-                )}
-              </span>
-              <span className="truncate">Фиксация</span>
-            </button>
-          </div>
-        </div>
+                {/* Step 3 button */}
+                <button
+                  type="button"
+                  disabled={!isStep3Accessible || isAuditRunning}
+                  onClick={() => handleStepClick(3)}
+                  className={`flex items-center justify-center gap-2 py-2 px-2 rounded-xl transition-all ${
+                    currentStep === 3
+                      ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold shadow-sm'
+                      : (!isStep3Accessible || isAuditRunning)
+                      ? 'text-slate-600 hover:text-slate-600 cursor-not-allowed opacity-50 bg-slate-900/10'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                  }`}
+                  title={
+                    isAuditRunning
+                      ? 'Переход заблокирован: выполняется анализ договора'
+                      : !selectedFile
+                      ? 'Сначала загрузите договор на Шаге 1'
+                      : !isStep3Accessible
+                      ? 'Вкладка заблокирована. Загрузите файл и нажмите «Перейти к фиксации напрямую» или завершите проверку'
+                      : 'Перейти к фиксации договора'
+                  }
+                >
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
+                    currentStep === 3
+                      ? 'bg-emerald-400 text-slate-950'
+                      : (!isStep3Accessible || isAuditRunning)
+                      ? 'bg-slate-900 text-slate-600 border border-slate-800'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {!isStep3Accessible || isAuditRunning ? (
+                      <Lock className="w-2.5 h-2.5 text-slate-600" />
+                    ) : (
+                      '3'
+                    )}
+                  </span>
+                  <span className="truncate">Фиксация</span>
+                </button>
+              </div>
+            </div>
 
         {/* ========================================================= */}
         {/* STEP 1: ЗАГРУЗКА ДОГОВОРА                                  */}
@@ -1390,8 +1540,9 @@ export default function App() {
               </span>
               <button
                 type="button"
+                disabled={isAnyExecutionRunning}
                 onClick={() => setIsProfileModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/80 hover:border-emerald-500/40 text-xs font-medium transition-all shadow-sm active:scale-95"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/80 hover:border-emerald-500/40 text-xs font-medium transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Настроить персональные правила бизнеса"
               >
                 <Settings className="w-3.5 h-3.5 text-emerald-400" />
@@ -2433,12 +2584,13 @@ export default function App() {
                 <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                   <button
                     type="button"
+                    disabled={isAnyExecutionRunning}
                     onClick={() => {
                       setStagedAgreedFile(null);
                       setAgreedFileError(null);
                       setIsAgreedUploadModalOpen(true);
                     }}
-                    className="sm:w-1/2 py-3.5 px-5 rounded-xl font-semibold text-xs sm:text-sm bg-[#0e141a] hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center justify-center gap-2 shadow-sm"
+                    className="sm:w-1/2 py-3.5 px-5 rounded-xl font-semibold text-xs sm:text-sm bg-[#0e141a] hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-4 h-4 text-emerald-400" />
                     <span>Загрузить согласованный документ</span>
@@ -2446,8 +2598,9 @@ export default function App() {
 
                   <button
                     type="button"
+                    disabled={isAnyExecutionRunning}
                     onClick={handleProceedToStamping}
-                    className="sm:w-1/2 relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2"
+                    className="sm:w-1/2 relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Lock className="w-4 h-4 text-slate-950" />
                     <span>Перейти к фиксации договора</span>
@@ -2521,12 +2674,13 @@ export default function App() {
                 <div className="flex justify-center">
                   <button
                     type="button"
+                    disabled={isProcessingStamp}
                     onClick={() => {
                       setStagedAgreedFile(null);
                       setAgreedFileError(null);
                       setIsAgreedUploadModalOpen(true);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-3 h-3 text-emerald-400" />
                     <span>Загрузить другую согласованную версию</span>

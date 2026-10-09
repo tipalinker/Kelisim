@@ -32,9 +32,12 @@ import { BlockchainRecord } from '../utils/solanaWallet';
 interface DocumentVerificationProps {
   recentRecords?: BlockchainRecord[];
   onSwitchToAudit?: () => void;
+  onVerifyingChange?: (isVerifying: boolean) => void;
 }
 
-export const DocumentVerification: React.FC<DocumentVerificationProps> = () => {
+export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
+  onVerifyingChange,
+}) => {
   const [signatureInput, setSignatureInput] = useState<string>('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -45,6 +48,11 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = () => {
 
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Notify parent component about verification in progress
+  React.useEffect(() => {
+    onVerifyingChange?.(isVerifying);
+  }, [isVerifying, onVerifyingChange]);
 
   const handleFileSelect = (file: File) => {
     setFileError(null);
