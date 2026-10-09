@@ -1231,8 +1231,46 @@ export default function App() {
           </div>
         )}
 
-        {/* 3-Step Indicator Bar */}
-        <div className="mb-8 bg-[#0f141a] border border-slate-800/90 rounded-2xl p-2 sm:p-3 shadow-lg">
+        {/* Main Mode Switcher: «Аудит и фиксация» vs «Проверить документ» (без кошелька) */}
+        <div className="flex items-center justify-center mb-8">
+          <div className="p-1 bg-[#0f141a] border border-slate-800 rounded-2xl inline-flex gap-1.5 shadow-lg">
+            <button
+              type="button"
+              onClick={() => setActiveMode('audit')}
+              className={`px-4 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeMode === 'audit'
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>Аудит и фиксация</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveMode('verify')}
+              className={`px-4 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeMode === 'verify'
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+              }`}
+            >
+              <FileSearch className="w-4 h-4 text-emerald-400" />
+              <span>Проверить документ</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-medium border border-emerald-500/30">
+                без кошелька
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* MODE: ПРОВЕРКА ДОКУМЕНТА БЕЗ КОШЕЛЬКА */}
+        {activeMode === 'verify' ? (
+          <DocumentVerification />
+        ) : (
+          <>
+            {/* 3-Step Indicator Bar */}
+            <div className="mb-8 bg-[#0f141a] border border-slate-800/90 rounded-2xl p-2 sm:p-3 shadow-lg">
           <div className="grid grid-cols-3 gap-1 sm:gap-2 text-xs">
             {/* Step 1 button */}
             <button
@@ -1344,6 +1382,45 @@ export default function App() {
               className="hidden"
               accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/png,image/jpeg"
             />
+
+            {/* Top Toolbar of Step 1: Status & "Мои правила" Button */}
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Загрузка документа
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsProfileModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/80 hover:border-emerald-500/40 text-xs font-medium transition-all shadow-sm active:scale-95"
+                title="Настроить персональные правила бизнеса"
+              >
+                <Settings className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Мои правила</span>
+                {isProfileFilled && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Правила настроены" />
+                )}
+              </button>
+            </div>
+
+            {/* Active Rules Banner on Step 1 */}
+            {isProfileFilled && (
+              <div className="mb-4 p-3 rounded-xl bg-emerald-950/20 border border-emerald-500/30 flex items-center justify-between gap-2.5 text-xs animate-in fade-in duration-200">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="text-emerald-300 font-semibold shrink-0">Активны ваши правила:</span>
+                  <span className="text-slate-300 truncate text-[11px] font-mono">
+                    {formatProfileSummary(businessProfile)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsProfileModalOpen(true)}
+                  className="text-[11px] text-emerald-400 hover:text-emerald-300 underline underline-offset-2 shrink-0 font-medium"
+                >
+                  Изменить
+                </button>
+              </div>
+            )}
 
             {/* Drag & drop square container */}
             <div
@@ -1903,6 +1980,95 @@ export default function App() {
                     </p>
                   </div>
                 </div>
+
+                {/* 1.1 Блок «Нарушения ваших правил» (показывается только если они есть) */}
+                {analysisResult.нарушения_правил && analysisResult.нарушения_правил.length > 0 && (
+                  <div className="bg-[#140c0e] border-2 border-rose-500/50 rounded-2xl p-6 sm:p-7 shadow-[0_0_35px_rgba(244,63,94,0.12)] space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rose-500/20 pb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                          <ShieldAlert className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                            <span>Нарушения ваших правил</span>
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                              {analysisResult.нарушения_правил.length}
+                            </span>
+                          </h3>
+                          <p className="text-xs text-rose-200/80">
+                            Условия в договоре, противоречащие заданным критериям вашего бизнеса
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsProfileModalOpen(true)}
+                        className="px-3 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5"
+                      >
+                        <Settings className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Изменить правила</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {analysisResult.нарушения_правил.map((violation, idx) => (
+                        <div
+                          key={idx}
+                          className="p-4 rounded-xl bg-[#080c0f] border border-rose-500/30 space-y-2 text-xs"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-mono font-semibold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                              {violation.пункт || `Пункт №${idx + 1}`}
+                            </span>
+                            <span className="text-rose-400 text-[11px] font-medium">
+                              Несоответствие критерию
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                            <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800">
+                              <div className="text-[11px] text-slate-400 mb-0.5">Ваше правило:</div>
+                              <div className="text-emerald-300 font-medium">{violation.правило}</div>
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-rose-950/20 border border-rose-500/20">
+                              <div className="text-[11px] text-rose-300/80 mb-0.5">Что в договоре:</div>
+                              <div className="text-rose-200 font-medium">{violation.что_в_договоре}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 1.2 Предложение задать правила, если профиль не заполнен */}
+                {!isProfileFilled && (
+                  <div className="p-4 sm:p-5 rounded-2xl bg-[#0f141a] border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center text-slate-400 shrink-0">
+                        <Sliders className="w-4 h-4 text-emerald-400" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-slate-200">
+                          Хотите персональную проверку под ваш бизнес?
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          Задайте максимальную пеню, срок оплаты, подсудность и роль компании
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsProfileModalOpen(true)}
+                      className="self-start sm:self-center shrink-0 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                    >
+                      <Settings className="w-3.5 h-3.5" />
+                      <span>Задать свои правила для точной проверки</span>
+                    </button>
+                  </div>
+                )}
 
                 {/* 2. Блок «Расчёты в тенге» (выполняются кодом на сайте по извлечённым числам) */}
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
@@ -2780,6 +2946,8 @@ export default function App() {
             </div>
           </div>
         )}
+        </>
+        )}
 
         {/* Feature Highlights */}
         <div className="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -3210,6 +3378,15 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* MODAL: Профиль бизнеса («Мои правила») */}
+      <BusinessProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        initialProfile={businessProfile}
+        onSave={handleSaveProfile}
+        onClear={handleClearProfile}
+      />
 
       {/* Footer */}
       <footer className="relative z-10 border-t border-slate-800/60 bg-[#070a0d] py-6">

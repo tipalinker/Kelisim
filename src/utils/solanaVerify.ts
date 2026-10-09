@@ -18,6 +18,34 @@ export interface VerificationOutcome {
   rawMemo?: string;
 }
 
+function decodeBase58(str: string): Uint8Array {
+  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const bytes = [0];
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    const val = ALPHABET.indexOf(c);
+    if (val < 0) return new Uint8Array(0);
+    for (let j = 0; j < bytes.length; j++) {
+      bytes[j] *= 58;
+    }
+    bytes[0] += val;
+    let carry = 0;
+    for (let j = 0; j < bytes.length; j++) {
+      bytes[j] += carry;
+      carry = bytes[j] >> 8;
+      bytes[j] &= 0xff;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  for (let i = 0; i < str.length && str[i] === '1'; i++) {
+    bytes.push(0);
+  }
+  return new Uint8Array(bytes.reverse());
+}
+
 /**
  * Extracts a clean Solana transaction signature from an Explorer URL or raw signature string.
  */
@@ -25,20 +53,20 @@ export function extractSolanaSignature(input: string): string {
   if (!input) return '';
   const trimmed = input.trim();
 
-  // Match /tx/<sig> or /txs/<sig> in Solana Explorer or Solscan URLs
-  const urlMatch = trimmed.match(/\/tx(?:s)?\/([1-9A-HJ-NP-za-km-z]{60,95})/);
+  // Match /tx/<sig> or /txs/<sig> or /transaction/<sig> in Solana Explorer or Solscan URLs
+  const urlMatch = trimmed.match(/\/(?:tx|txs|transaction)\/([1-9A-HJ-NP-Za-km-z]{60,95})/i);
   if (urlMatch) {
     return urlMatch[1];
   }
 
   // Match URL query parameter e.g. ?tx=<sig>
-  const queryMatch = trimmed.match(/[?&]tx=([1-9A-HJ-NP-za-km-z]{60,95})/);
+  const queryMatch = trimmed.match(/[?&]tx=([1-9A-HJ-NP-Za-km-z]{60,95})/i);
   if (queryMatch) {
     return queryMatch[1];
   }
 
   // If raw base58 signature
-  const base58Match = trimmed.match(/^[1-9A-HJ-NP-za-km-z]{60,95}$/);
+  const base58Match = trimmed.match(/^[1-9A-HJ-NP-Za-km-z]{60,95}$/);
   if (base58Match) {
     return base58Match[0];
   }
@@ -46,14 +74,14 @@ export function extractSolanaSignature(input: string): string {
   // Fallback: strip URL query params / hashes and try extracting base58 substring
   const cleanUrl = trimmed.split('?')[0].split('#')[0];
   const lastSegment = cleanUrl.split('/').filter(Boolean).pop() || '';
-  if (/^[1-9A-HJ-NP-za-km-z]{60,95}$/.test(lastSegment)) {
+  if (/^[1-9A-HJ-NP-Za-km-z]{60,95}$/.test(lastSegment)) {
     return lastSegment;
   }
 
   return trimmed;
 }
 
-const MEMO_REGEX = /Kelisim v1 \| sha256:([a-fA-F0-9]{64})/i;
+const MEMO_REGEX = /Kelisim\s*v1\s*\|\s*sha256:([a-fA-F0-9]{64})/i;
 
 /**
  * Verifies a contract file against a Solana devnet transaction.
@@ -114,6 +142,21 @@ export async function verifyDocumentAgainstSolana(
         maxSupportedTransactionVersion: 0,
       });
     }
+
+    if (!tx) {
+      // Retry once with finalized commitment in case of recent confirmation
+      try {
+        tx = await connection.getParsedTransaction(cleanSignature, {
+          commitment: 'finalized',
+          maxSupportedTransactionVersion: 0,
+        });
+      } catch {
+        tx = await connection.getTransaction(cleanSignature, {
+          commitment: 'finalized',
+          maxSupportedTransactionVersion: 0,
+        });
+      }
+    }
   } catch (netErr: any) {
     console.error('Failed to fetch transaction from devnet RPC:', netErr);
     return {
@@ -160,10 +203,49 @@ export async function verifyDocumentAgainstSolana(
           break;
         }
       }
+      if ('data' in ix && typeof ix.data === 'string') {
+        try {
+          const decoded = new TextDecoder().decode(decodeBase58(ix.data));
+          const match = decoded.match(MEMO_REGEX);
+          if (match) {
+            blockchainHash = match[1].toLowerCase();
+            rawMemo = match[0];
+            break;
+          }
+        } catch {}
+      }
     }
   }
 
-  // Search source C: serialized JSON representation
+  // Search source C: inner instructions
+  if (!blockchainHash && tx?.meta?.innerInstructions) {
+    for (const inner of tx.meta.innerInstructions) {
+      for (const ix of inner.instructions || []) {
+        if ('parsed' in ix && typeof ix.parsed === 'string') {
+          const match = ix.parsed.match(MEMO_REGEX);
+          if (match) {
+            blockchainHash = match[1].toLowerCase();
+            rawMemo = match[0];
+            break;
+          }
+        }
+        if ('data' in ix && typeof ix.data === 'string') {
+          try {
+            const decoded = new TextDecoder().decode(decodeBase58(ix.data));
+            const match = decoded.match(MEMO_REGEX);
+            if (match) {
+              blockchainHash = match[1].toLowerCase();
+              rawMemo = match[0];
+              break;
+            }
+          } catch {}
+        }
+      }
+      if (blockchainHash) break;
+    }
+  }
+
+  // Search source D: serialized JSON representation
   if (!blockchainHash) {
     try {
       const serialized = JSON.stringify(tx);
