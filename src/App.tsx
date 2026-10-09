@@ -1248,7 +1248,7 @@ export default function App() {
             Kelisim
           </h1>
           <p className="text-base sm:text-lg text-emerald-400/90 font-medium tracking-tight">
-            Договор, который нельзя переписать
+            Проверь договор. Зафиксируй версию. Докажи её.
           </p>
         </div>
 
