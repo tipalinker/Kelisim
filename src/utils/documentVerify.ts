@@ -168,7 +168,7 @@ function formatBlockTime(blockTimeSeconds?: number | null): string {
       minute: '2-digit',
       second: '2-digit',
       timeZone: 'Asia/Almaty',
-    }).format(date) + ' (Алматы, GMT+5)';
+    }).format(date) + ' (GMT+5)';
   } catch {
     return 'недавнего блока';
   }

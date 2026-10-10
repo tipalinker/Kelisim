@@ -133,8 +133,7 @@ interface StampedRecord {
   timestamp: string;
   network: string;
   status: 'Зафиксирован';
-  partyA: string;
-  partyB: string;
+  recordedBy: string;
   explanation: string;
   signature?: string;
   explorerUrl?: string;
@@ -907,7 +906,7 @@ export default function App() {
         minute: '2-digit',
         second: '2-digit',
         timeZone: 'Asia/Almaty',
-      }).format(now) + ' (Алматы, GMT+5)';
+      }).format(now) + ' (GMT+5)';
 
       const currentPubkey = provider.publicKey.toString();
       const explorerUrl = `https://explorer.solana.com/tx/${signature}?cluster=devnet`;
@@ -926,10 +925,6 @@ export default function App() {
 
       setBlockchainRecords(prev => [newRecord, ...prev.filter(r => r.signature !== signature)]);
 
-      const detectedParties = analysisResult?.стороны && analysisResult.стороны.length >= 2
-        ? `Стороны: ${analysisResult.стороны[0]} и ${analysisResult.стороны[1]}`
-        : `Сторона А: подтвердила (${formatAddress(currentPubkey)})`;
-
       setRecord({
         fileName: selectedFile.name,
         fileSize: formatFileSize(selectedFile.size),
@@ -937,8 +932,7 @@ export default function App() {
         timestamp: formattedDate,
         network: 'Solana (devnet)',
         status: 'Зафиксирован',
-        partyA: detectedParties,
-        partyB: 'Сторона Б: подтвердила',
+        recordedBy: `Зафиксировано с кошелька ${formatAddress(currentPubkey)}`,
         explanation: 'Если в документе изменить даже одну запятую, отпечаток не совпадёт',
         signature,
         explorerUrl,
@@ -2531,20 +2525,6 @@ export default function App() {
                               {item.когда}
                             </div>
                           </div>
-
-                          <div className="self-start sm:self-center">
-                            <button
-                              disabled
-                              type="button"
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-400 border border-slate-700/60 cursor-not-allowed opacity-80"
-                            >
-                              <Bell className="w-3.5 h-3.5 text-slate-500" />
-                              <span>Напомнить мне</span>
-                              <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                                Скоро
-                              </span>
-                            </button>
-                          </div>
                         </div>
                       ))}
                     </div>
@@ -2877,20 +2857,14 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Стороны */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50">
-                    <span className="text-xs font-medium text-slate-400 uppercase tracking-wider self-start pt-1">
-                      Стороны
+                  {/* Подтверждение */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
+                    <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                      Подтверждение
                     </span>
-                    <div className="sm:col-span-2 space-y-1.5">
-                      <div className="flex items-center gap-2 text-sm text-slate-200">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                        <span>{record.partyA}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-slate-200">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                        <span>{record.partyB}</span>
-                      </div>
+                    <div className="sm:col-span-2 flex items-center gap-2 text-sm text-slate-200">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                      <span>{record.recordedBy}</span>
                     </div>
                   </div>
 
@@ -2956,12 +2930,20 @@ export default function App() {
 
                         <div className="p-2.5 rounded-lg bg-red-950/20 border border-red-500/20">
                           <div className="flex items-center justify-between text-[11px] text-red-400 font-semibold mb-1">
-                            <span>Измененная версия (изменение одного слова или суммы)</span>
+                            <span className="flex items-center gap-2">
+                              <span>Измененная версия (изменение одного слова или суммы)</span>
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/20 text-red-300 border border-red-500/30">
+                                Пример для демонстрации
+                              </span>
+                            </span>
                             <span>Подделка обнаружена ✗</span>
                           </div>
-                          <code className="text-[11px] font-mono text-red-300/80 break-all">
+                          <code className="text-[11px] font-mono text-red-300/80 break-all block">
                             f810b49c2e018a33d7b8895021a81dc4901ba32efb6241097e324ef09000a187
                           </code>
+                          <p className="text-[10px] text-red-400/80 mt-1 font-medium">
+                            Пример для демонстрации
+                          </p>
                         </div>
                       </div>
 
@@ -2985,7 +2967,7 @@ export default function App() {
                         `Транзакция: ${record.signature ?? '—'}\n` +
                         `Дата/Время: ${record.timestamp}\n` +
                         `Сеть: ${record.network}\n` +
-                        `Стороны: ${record.partyA}, ${record.partyB}\n` +
+                        `${record.recordedBy}\n` +
                         `Explorer: ${record.explorerUrl ?? '—'}\n` +
                         `Сервис: Kelisim (Казахстан)`;
                       copyToClipboard(cert, setCopiedCertificate);
@@ -3108,7 +3090,7 @@ export default function App() {
           <div className="p-4 rounded-xl bg-[#0e141a]/60 border border-slate-800/80">
             <div className="text-emerald-400 font-semibold text-sm mb-1 flex items-center gap-2">
               <FileText className="w-4 h-4" />
-              <span>Без юриста</span>
+              <span>Первая проверка без юриста</span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
               Выявляйте скрытые невыгодные условия и формулируйте аргументированные правки контрагенту.
@@ -3131,7 +3113,7 @@ export default function App() {
               <span>Неизменяемость</span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Запись SHA-256 в Solana гарантирует, что согласованную редакцию невозможно подменить или оспорить.
+              Запись SHA-256 в Solana позволяет доказать, что документ не менялся: любая правка сразу видна по несовпадению хеша.
             </p>
           </div>
         </div>
