@@ -42,8 +42,7 @@ import {
 } from 'lucide-react';
 import { 
   GeminiContractAnalysis, 
-  TrapItem,
-  RuleViolation 
+  TrapItem 
 } from './data/contractTrapData';
 import { KelisimLogo } from './components/KelisimLogo';
 import { 
@@ -198,27 +197,6 @@ function formatTrapsHeadline(count: number): string {
   return `Найдено ${count} условий, на которые стоит обратить внимание`;
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.split(',')[1] || '';
-      resolve(base64);
-    };
-    reader.onerror = (err) => reject(err);
-    reader.readAsDataURL(file);
-  });
-}
-
-function readFileAsText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (err) => reject(err);
-    reader.readAsText(file, 'UTF-8');
-  });
-}
 
 export default function App() {
   // Navigation mode: 'audit' (standard 3-step workflow) vs 'verify' (check document without wallet)
@@ -236,6 +214,7 @@ export default function App() {
     }
   });
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+  const [pendingRecheck, setPendingRecheck] = useState<boolean>(false);
 
   const isProfileFilled = Boolean(
     businessProfile.role ||
@@ -253,10 +232,22 @@ export default function App() {
     } catch (err) {
       console.warn('Failed to save business profile to localStorage:', err);
     }
+    const hasRules = Boolean(
+      newProfile.role ||
+      newProfile.maxPenaltyPercent ||
+      newProfile.maxPaymentDays ||
+      newProfile.minNoticeDays ||
+      newProfile.disputeCity ||
+      newProfile.customRules?.trim()
+    );
+    if (hasRules && currentStep === 2) {
+      setPendingRecheck(true);
+    }
   };
 
   const handleClearProfile = () => {
     setBusinessProfile(defaultBusinessProfile);
+    setPendingRecheck(false);
     try {
       localStorage.removeItem(BUSINESS_PROFILE_STORAGE_KEY);
     } catch (err) {
@@ -289,7 +280,7 @@ export default function App() {
   // Calculation overrides / user inputs for missing contract numbers
   const [customMonthlyPayment, setCustomMonthlyPayment] = useState<string>('');
   const [customPenaltyPercent, setCustomPenaltyPercent] = useState<string>('');
-  const [customPenaltyDays, setCustomPenaltyDays] = useState<number>(30);
+  const customPenaltyDays = 30;
 
   // Flag indicating any AI request in progress
   const isAnyRequestInFlight = isAnalyzing || isRechecking || isGeneratingLetter;
@@ -328,7 +319,6 @@ export default function App() {
   // Contract version tracking
   const [isAgreedVersion, setIsAgreedVersion] = useState<boolean>(false);
   const [originalFileName, setOriginalFileName] = useState<string | null>(null);
-  const [originalFileSize, setOriginalFileSize] = useState<number | null>(null);
   const [replacementSource, setReplacementSource] = useState<'manual' | 'rechecked' | null>(null);
 
   // Agreed upload modal and risk warning modal
@@ -392,7 +382,6 @@ export default function App() {
     setLetterText('');
     setIsAgreedVersion(false);
     setOriginalFileName(null);
-    setOriginalFileSize(null);
     setReplacementSource(null);
     setIsStep3Unlocked(false);
 
@@ -471,7 +460,7 @@ export default function App() {
   };
 
   // Step 1 & Step 2: Optimized AI Trap Check via /api/analyze with SHA-256 caching
-  const startTrapCheck = async (targetFile?: File) => {
+  const startTrapCheck = async (targetFile?: File, customProfile?: BusinessProfile) => {
     if (isAnyRequestInFlight) return;
 
     const fileToAnalyze = targetFile || selectedFile;
@@ -479,6 +468,16 @@ export default function App() {
       setFileError('Сначала загрузите договор');
       return;
     }
+
+    const activeProfile = customProfile || businessProfile;
+    const hasFilledRules = Boolean(
+      activeProfile.role ||
+      activeProfile.maxPenaltyPercent ||
+      activeProfile.maxPaymentDays ||
+      activeProfile.minNoticeDays ||
+      activeProfile.disputeCity ||
+      activeProfile.customRules?.trim()
+    );
 
     setSelectedFile(fileToAnalyze);
     setFileError(null);
@@ -491,7 +490,7 @@ export default function App() {
       const fileHash = await calculateFileSha256(fileToAnalyze);
 
       // Business Profile rules summary
-      const userRulesSummary = isProfileFilled ? formatProfileSummary(businessProfile) : '';
+      const userRulesSummary = hasFilledRules ? formatProfileSummary(activeProfile) : '';
       const cacheKey = userRulesSummary ? `${fileHash}_rules_${encodeURIComponent(userRulesSummary.slice(0, 50))}` : fileHash;
 
       // 2. Check if result is already cached for this exact file + rules
@@ -499,6 +498,7 @@ export default function App() {
       if (cached) {
         setAnalysisResult(cached);
         setExpandedTraps({ 0: true, 1: true });
+        setPendingRecheck(false);
         return;
       }
 
@@ -534,12 +534,18 @@ export default function App() {
       setAnalysisResult(data);
       setAnalysisCache(cacheKey, data);
       setExpandedTraps({ 0: true, 1: true });
+      setPendingRecheck(false);
     } catch (err: any) {
       console.error('Trap check error:', err);
       setAnalysisError(err?.message || 'Ошибка связи с сервером анализа. Проверьте интернет-соединение и повторите попытку.');
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleRecheckWithProfile = async () => {
+    if (isAnyRequestInFlight || !selectedFile) return;
+    await startTrapCheck(selectedFile, businessProfile);
   };
 
   // Step 2: Optimized Recheck of agreed version (Variant A) - only new text + previous traps list
@@ -667,10 +673,8 @@ export default function App() {
     if (!stagedAgreedFile || isAnyRequestInFlight) return;
 
     const prevName = originalFileName || selectedFile?.name || 'Исходный черновик';
-    const prevSize = originalFileSize || (selectedFile ? selectedFile.size : 0);
 
     setOriginalFileName(prevName);
-    setOriginalFileSize(prevSize);
 
     const newDoc = stagedAgreedFile;
     setStagedAgreedFile(null);
@@ -964,7 +968,6 @@ export default function App() {
     setSelectedFile(null);
     setIsAgreedVersion(false);
     setOriginalFileName(null);
-    setOriginalFileSize(null);
     setReplacementSource(null);
     setIsAgreedUploadModalOpen(false);
     setIsRiskWarningModalOpen(false);
@@ -976,6 +979,7 @@ export default function App() {
     setLetterText('');
     setTxError(null);
     setFileError(null);
+    setPendingRecheck(false);
     setIsStep3Unlocked(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -2060,6 +2064,14 @@ export default function App() {
                               <span>Исходный черновик {analysisResult.ловушки.length > 0 ? '(найдены риски)' : '(чисто)'}</span>
                             </span>
                           )}
+
+                          {/* Подпись при заполненном профиле правил */}
+                          {isProfileFilled && !pendingRecheck && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                              <span>Проверено по вашим правилам</span>
+                            </span>
+                          )}
                         </div>
 
                         <div className="font-semibold text-white text-sm sm:text-base break-all flex items-center gap-2">
@@ -2188,32 +2200,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 1.2 Предложение задать правила, если профиль не заполнен */}
-                {!isProfileFilled && (
-                  <div className="p-4 sm:p-5 rounded-2xl bg-[#0f141a] border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center text-slate-400 shrink-0">
-                        <Sliders className="w-4 h-4 text-emerald-400" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-slate-200">
-                          Хотите персональную проверку под ваш бизнес?
-                        </p>
-                        <p className="text-[11px] text-slate-400">
-                          Задайте максимальную пеню, срок оплаты, подсудность и роль компании
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsProfileModalOpen(true)}
-                      className="self-start sm:self-center shrink-0 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5"
-                    >
-                      <Settings className="w-3.5 h-3.5" />
-                      <span>Задать свои правила для точной проверки</span>
-                    </button>
-                  </div>
-                )}
 
                 {/* 2. Блок «Расчёты в тенге» (выполняются кодом на сайте по извлечённым числам) */}
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
@@ -2559,6 +2545,45 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Строка-ссылка для задания правил или предложение перепроверить */}
+                {pendingRecheck ? (
+                  <div className="pt-2 pb-1 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs animate-in fade-in duration-200">
+                    <div className="flex items-center gap-2 text-slate-300">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Правила сохранены. Чтобы применить их к договору, запустите повторный анализ:</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isAnyRequestInFlight}
+                      onClick={handleRecheckWithProfile}
+                      className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition-all shrink-0 active:scale-95 disabled:opacity-50"
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                          <span>Проверяем договор…</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Перепроверить</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : !isProfileFilled ? (
+                  <div className="pt-1 pb-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsProfileModalOpen(true)}
+                      className="text-xs text-emerald-400 hover:text-emerald-300 underline underline-offset-4 hover:no-underline transition-colors inline-flex items-center gap-1.5 bg-transparent border-0 p-0 cursor-pointer"
+                    >
+                      <Sliders className="w-3.5 h-3.5" />
+                      <span>Задать свои правила и перепроверить</span>
+                    </button>
+                  </div>
+                ) : null}
 
                 {/* 7. Внизу блок действий: «Загрузить согласованный документ» и «Перейти к фиксации договора» */}
                 <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
