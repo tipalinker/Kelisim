@@ -17,7 +17,7 @@ export interface ExtractedFilePayload {
 /**
  * Extract text from PDF in the browser using pdfjs-dist
  */
-async function extractTextFromPdf(file: File): Promise<string> {
+async function extractTextFromPdf(file: File, lang: 'en' | 'ru' = 'en'): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   // @ts-ignore
   const pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
@@ -45,7 +45,8 @@ async function extractTextFromPdf(file: File): Promise<string> {
       .trim();
 
     if (pageText) {
-      fullText += `[Стр. ${pageNum}] ${pageText}\n\n`;
+      const pagePrefix = lang === 'en' ? `[Page ${pageNum}]` : `[Стр. ${pageNum}]`;
+      fullText += `${pagePrefix} ${pageText}\n\n`;
     }
   }
 
@@ -66,7 +67,8 @@ async function extractTextFromDocx(file: File): Promise<string> {
  */
 export async function resizeImageForAnalysis(
   file: File,
-  maxWidth = 1200
+  maxWidth = 1200,
+  lang: 'en' | 'ru' = 'en'
 ): Promise<{ base64: string; mimeType: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -88,7 +90,7 @@ export async function resizeImageForAnalysis(
       const ctx = canvas.getContext('2d');
 
       if (!ctx) {
-        reject(new Error('Не удалось подготовить изображение для обработки.'));
+        reject(new Error(lang === 'en' ? 'Failed to prepare image for processing.' : 'Не удалось подготовить изображение для обработки.'));
         return;
       }
 
@@ -105,7 +107,7 @@ export async function resizeImageForAnalysis(
 
     img.onerror = () => {
       URL.revokeObjectURL(objectUrl);
-      reject(new Error('Не удалось открыть изображение договора.'));
+      reject(new Error(lang === 'en' ? 'Failed to open contract image.' : 'Не удалось открыть изображение договора.'));
     };
 
     img.src = objectUrl;
@@ -116,9 +118,9 @@ export async function resizeImageForAnalysis(
  * Prepares file for analysis:
  * - For PDF, DOCX, TXT: extracts plain text directly in the browser and returns text.
  * - For PNG, JPG: resizes image to max width 1200px.
- * - If text cannot be extracted: throws a clear Russian error message.
+ * - If text cannot be extracted: throws a clear error message in selected language.
  */
-export async function prepareFileForAnalysis(file: File): Promise<ExtractedFilePayload> {
+export async function prepareFileForAnalysis(file: File, lang: 'en' | 'ru' = 'en'): Promise<ExtractedFilePayload> {
   const lowerName = file.name.toLowerCase();
   const mimeType = file.type || '';
 
@@ -131,7 +133,7 @@ export async function prepareFileForAnalysis(file: File): Promise<ExtractedFileP
     try {
       const text = await file.text();
       if (!text || text.trim().length === 0) {
-        throw new Error('Файл TXT пуст. Пожалуйста, загрузите договор с текстом.');
+        throw new Error(lang === 'en' ? 'TXT file is empty. Please upload a contract containing text.' : 'Файл TXT пуст. Пожалуйста, загрузите договор с текстом.');
       }
       return {
         fileText: text.trim(),
@@ -140,7 +142,7 @@ export async function prepareFileForAnalysis(file: File): Promise<ExtractedFileP
         isExtractedText: true,
       };
     } catch (err: any) {
-      throw new Error(err?.message || 'Не удалось прочитать текстовый файл.');
+      throw new Error(err?.message || (lang === 'en' ? 'Failed to read text file.' : 'Не удалось прочитать текстовый файл.'));
     }
   }
 
@@ -154,7 +156,9 @@ export async function prepareFileForAnalysis(file: File): Promise<ExtractedFileP
 
     if (!text || text.trim().length === 0) {
       throw new Error(
-        'Не удалось извлечь текст из файла DOCX. Убедитесь, что файл содержит текст договора и не повреждён.'
+        lang === 'en'
+          ? 'Failed to extract text from DOCX file. Make sure the file contains contract text and is not corrupted.'
+          : 'Не удалось извлечь текст из файла DOCX. Убедитесь, что файл содержит текст договора и не повреждён.'
       );
     }
 
@@ -169,14 +173,16 @@ export async function prepareFileForAnalysis(file: File): Promise<ExtractedFileP
   if (isPdf) {
     let text = '';
     try {
-      text = await extractTextFromPdf(file);
+      text = await extractTextFromPdf(file, lang);
     } catch (err) {
       console.error('Failed to parse PDF in browser:', err);
     }
 
     if (!text || text.trim().length < 15) {
       throw new Error(
-        'В файле PDF не найден текстовый слой (возможно, это отсканированное изображение или защищённый PDF). Для экономии токенов загрузите файл в формате DOCX, TXT или фото страниц договора (PNG/JPG).'
+        lang === 'en'
+          ? 'No text layer found in PDF file (it may be a scan or protected PDF). Please upload as DOCX, TXT, or page photos (PNG/JPG).'
+          : 'В файле PDF не найден текстовый слой (возможно, это отсканированное изображение или защищённый PDF). Для экономии токенов загрузите файл в формате DOCX, TXT или фото страниц договора (PNG/JPG).'
       );
     }
 
@@ -190,7 +196,7 @@ export async function prepareFileForAnalysis(file: File): Promise<ExtractedFileP
 
   if (isImage) {
     try {
-      const { base64, mimeType: compressedMime } = await resizeImageForAnalysis(file, 1200);
+      const { base64, mimeType: compressedMime } = await resizeImageForAnalysis(file, 1200, lang);
       return {
         fileBase64: base64,
         mimeType: compressedMime,
@@ -198,9 +204,9 @@ export async function prepareFileForAnalysis(file: File): Promise<ExtractedFileP
         isExtractedText: false,
       };
     } catch (err: any) {
-      throw new Error(err?.message || 'Не удалось подготовить изображение договора.');
+      throw new Error(err?.message || (lang === 'en' ? 'Failed to prepare contract image.' : 'Не удалось подготовить изображение договора.'));
     }
   }
 
-  throw new Error('Неподдерживаемый формат файла. Поддерживаются PDF, DOCX, TXT, PNG, JPG.');
+  throw new Error(lang === 'en' ? 'Unsupported file format. Supported: PDF, DOCX, TXT, PNG, JPG.' : 'Неподдерживаемый формат файла. Поддерживаются PDF, DOCX, TXT, PNG, JPG.');
 }

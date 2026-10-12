@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type RiskLevel = 'низкий' | 'средний' | 'высокий';
+export type RiskLevel = 'низкий' | 'средний' | 'высокий' | 'low' | 'medium' | 'high';
 
 export interface TrapItem {
   пункт: string;
@@ -12,7 +12,7 @@ export interface TrapItem {
   чем_опасно?: string;
   просить?: string;
   что_просить?: string;
-  уровень: 'средний' | 'высокий';
+  уровень: 'средний' | 'высокий' | 'medium' | 'high';
 }
 
 export interface ExtractedNumbers {
@@ -31,7 +31,7 @@ export interface ImportantDate {
   когда: string;
 }
 
-export type TrapStatus = 'устранена' | 'осталась' | 'изменена';
+export type TrapStatus = 'устранена' | 'осталась' | 'изменена' | 'resolved' | 'remains' | 'changed' | 'modified';
 
 export interface TrapComparisonItem {
   пункт: string;

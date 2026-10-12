@@ -6,6 +6,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   ShieldCheck, 
+  Shield,
   Upload, 
   FileText, 
   CheckCircle2, 
@@ -55,74 +56,118 @@ import {
   BlockchainRecord
 } from './utils/solanaWallet';
 import { prepareFileForAnalysis } from './utils/fileExtract';
-import { BusinessProfileModal, BusinessProfile } from './components/BusinessProfileModal';
+import { BusinessProfileModal } from './components/BusinessProfileModal';
 import { DocumentVerification } from './components/DocumentVerification';
+import {
+  BusinessProfile,
+  getSavedBusinessProfile,
+  saveBusinessProfile,
+  clearBusinessProfile,
+  isBusinessProfileActive,
+  formatBusinessProfileForPrompt,
+  formatProfileSummary,
+  getDefaultBusinessProfile,
+} from './utils/businessProfile';
+import {
+  Language,
+  t,
+  setLanguage,
+  getLanguage,
+  formatRole,
+  formatFileSize,
+  formatTenge,
+  formatDaysGenitive,
+  formatDateTime,
+} from './i18n';
+import { formatTrapsHeadline } from './utils/translations';
 
-const BUSINESS_PROFILE_STORAGE_KEY = 'kelisim_business_profile';
-
-const defaultBusinessProfile: BusinessProfile = {
-  role: '',
-  maxPenaltyPercent: '',
-  maxPaymentDays: '',
-  minNoticeDays: '',
-  disputeCity: '',
-  customRules: '',
-};
-
-function formatProfileSummary(profile: BusinessProfile): string {
-  const parts: string[] = [];
-  if (profile.role) parts.push(`Роль: ${profile.role}`);
-  if (profile.maxPenaltyPercent) parts.push(`макс. неустойка в день: ${profile.maxPenaltyPercent}%`);
-  if (profile.maxPaymentDays) parts.push(`срок оплаты: до ${profile.maxPaymentDays} дн.`);
-  if (profile.minNoticeDays) parts.push(`мин. срок уведомления об отказе: ${profile.minNoticeDays} дн.`);
-  if (profile.disputeCity) parts.push(`город споров: ${profile.disputeCity}`);
-  if (profile.customRules && profile.customRules.trim()) parts.push(`доп. правила: ${profile.customRules.trim().slice(0, 300)}`);
-  return parts.join(', ');
-}
-
-// Local storage caching helpers for SHA-256 result reuse
-function getAnalysisCache(hash: string): GeminiContractAnalysis | null {
+// Local storage caching helpers for SHA-256 result reuse strictly per language
+function getAnalysisCache(hash: string, lang: Language): GeminiContractAnalysis | null {
   try {
-    const raw = localStorage.getItem(`kelisim_analysis_${hash}`);
+    const raw = localStorage.getItem(`kelisim_analysis_${hash}_${lang}`);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
-function setAnalysisCache(hash: string, data: GeminiContractAnalysis): void {
+function setAnalysisCache(hash: string, lang: Language, data: GeminiContractAnalysis): void {
   try {
-    localStorage.setItem(`kelisim_analysis_${hash}`, JSON.stringify(data));
+    localStorage.setItem(`kelisim_analysis_${hash}_${lang}`, JSON.stringify(data));
   } catch {}
 }
 
-function getRecheckCache(key: string): GeminiContractAnalysis | null {
+function getRecheckCache(key: string, lang: Language): GeminiContractAnalysis | null {
   try {
-    const raw = localStorage.getItem(`kelisim_recheck_${key}`);
+    const raw = localStorage.getItem(`kelisim_recheck_${key}_${lang}`);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
-function setRecheckCache(key: string, data: GeminiContractAnalysis): void {
+function setRecheckCache(key: string, lang: Language, data: GeminiContractAnalysis): void {
   try {
-    localStorage.setItem(`kelisim_recheck_${key}`, JSON.stringify(data));
+    localStorage.setItem(`kelisim_recheck_${key}_${lang}`, JSON.stringify(data));
   } catch {}
 }
 
-function getLetterCache(hash: string): string | null {
+function getLetterCache(hash: string, lang: Language): string | null {
   try {
-    return localStorage.getItem(`kelisim_letter_${hash}`) || null;
+    return localStorage.getItem(`kelisim_letter_${hash}_${lang}`) || null;
   } catch {
     return null;
   }
 }
 
-function setLetterCache(hash: string, text: string): void {
+function setLetterCache(hash: string, lang: Language, text: string): void {
   try {
-    localStorage.setItem(`kelisim_letter_${hash}`, text);
+    localStorage.setItem(`kelisim_letter_${hash}_${lang}`, text);
   } catch {}
+}
+
+function getLocalizedErrorMessage(rawError: string | null, lang: Language): string | null {
+  if (!rawError) return null;
+  const directTrans = t(rawError, undefined, lang);
+  if (directTrans && directTrans !== rawError) return directTrans;
+
+  const lower = rawError.toLowerCase();
+  if (lower.includes('connection') || lower.includes('связи') || lower.includes('fetch') || lower.includes('network') || lower.includes('сетев')) {
+    return t('step2.analysisConnError', undefined, lang);
+  }
+  if (lower.includes('format') || lower.includes('формат') || lower.includes('неверн')) {
+    return t('step2.analysisFailedMsg', undefined, lang);
+  }
+  if (lower.includes('overload') || lower.includes('перегружен') || lower.includes('503') || lower.includes('unavailable') || lower.includes('demand')) {
+    return lang === 'ru' 
+      ? 'Сервис Gemini временно перегружен запросами. Нажмите «Повторить».'
+      : 'Gemini service is temporarily overloaded. Please retry.';
+  }
+  if (lower.includes('rate limit') || lower.includes('лимит') || lower.includes('429') || lower.includes('exhausted')) {
+    return lang === 'ru'
+      ? 'Превышен лимит запросов к ИИ. Подождите несколько секунд и нажмите «Повторить».'
+      : 'AI rate limit exceeded. Please wait a few seconds and retry.';
+  }
+  if (lower.includes('api_key') || lower.includes('ключ')) {
+    return lang === 'ru'
+      ? 'Ключ доступа GEMINI_API_KEY не настроен на сервере.'
+      : 'GEMINI_API_KEY is not configured on the server.';
+  }
+  if (lower.includes('not provided') || lower.includes('не передан')) {
+    return lang === 'ru'
+      ? 'Текст или изображение договора не переданы для анализа.'
+      : 'Contract text or image was not provided for analysis.';
+  }
+  if (lower.includes('failed to prepare letter') || lower.includes('не удалось подготовить письмо')) {
+    return t('step2.letterError', undefined, lang);
+  }
+  if (lower.includes('failed to analyze') || lower.includes('не удалось проанализировать')) {
+    return t('step2.analysisFailedMsg', undefined, lang);
+  }
+  if (lower.includes('failed to complete recheck') || lower.includes('не удалось выполнить повторную проверку')) {
+    return t('step2.recheckFailedMsg', undefined, lang);
+  }
+  return rawError;
 }
 
 interface StampedRecord {
@@ -130,9 +175,11 @@ interface StampedRecord {
   fileSize?: string;
   hash: string;
   timestamp: string;
+  timestampMs?: number;
   network: string;
-  status: 'Зафиксирован';
+  status: string;
   recordedBy: string;
+  recordedByAddress?: string;
   explanation: string;
   signature?: string;
   explorerUrl?: string;
@@ -142,7 +189,7 @@ interface StampedRecord {
 
 const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4 MB
 
-function validateContractFile(file: File): { valid: boolean; error?: string } {
+function validateContractFile(file: File, lang: Language = 'en'): { valid: boolean; error?: string } {
   const lowerName = file.name.toLowerCase();
   const validExtensions = ['.pdf', '.docx', '.txt', '.png', '.jpg', '.jpeg'];
   const hasValidExt = validExtensions.some((ext) => lowerName.endsWith(ext));
@@ -158,43 +205,18 @@ function validateContractFile(file: File): { valid: boolean; error?: string } {
   if (!hasValidExt && !hasValidMime) {
     return {
       valid: false,
-      error: 'Неподдерживаемый формат файла. Разрешены только PDF, DOCX, TXT, PNG, JPG (до 4 МБ).',
+      error: t('step1.invalidFormat', undefined, lang),
     };
   }
 
   if (file.size > MAX_FILE_SIZE) {
     return {
       valid: false,
-      error: `Файл превышает допустимый размер (до 4 МБ). Текущий размер: ${formatFileSize(file.size)}.`,
+      error: t('step1.fileTooBigWithCurrent', { size: formatFileSize(file.size, lang) }, lang),
     };
   }
 
   return { valid: true };
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return bytes + ' байт';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КБ';
-  return (bytes / (1024 * 1024)).toFixed(2) + ' МБ';
-}
-
-function formatTenge(amount: number): string {
-  return new Intl.NumberFormat('ru-RU').format(Math.round(amount)) + ' ₸';
-}
-
-function formatTrapsHeadline(count: number): string {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod100 >= 11 && mod100 <= 14) {
-    return `Найдено ${count} условий, на которые стоит обратить внимание`;
-  }
-  if (mod10 === 1) {
-    return `Найдено ${count} условие, на которое стоит обратить внимание`;
-  }
-  if (mod10 >= 2 && mod10 <= 4) {
-    return `Найдено ${count} условия, на которые стоит обратить внимание`;
-  }
-  return `Найдено ${count} условий, на которые стоит обратить внимание`;
 }
 
 
@@ -205,54 +227,24 @@ export default function App() {
   const [blockedTabNotice, setBlockedTabNotice] = useState<string | null>(null);
 
   // Business Profile state (persisted in localStorage with try/catch)
-  const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => {
-    try {
-      const raw = localStorage.getItem(BUSINESS_PROFILE_STORAGE_KEY);
-      return raw ? { ...defaultBusinessProfile, ...JSON.parse(raw) } : defaultBusinessProfile;
-    } catch {
-      return defaultBusinessProfile;
-    }
-  });
+  const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => getSavedBusinessProfile());
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
   const [pendingRecheck, setPendingRecheck] = useState<boolean>(false);
 
-  const isProfileFilled = Boolean(
-    businessProfile.role ||
-    businessProfile.maxPenaltyPercent ||
-    businessProfile.maxPaymentDays ||
-    businessProfile.minNoticeDays ||
-    businessProfile.disputeCity ||
-    businessProfile.customRules?.trim()
-  );
+  const isProfileFilled = isBusinessProfileActive(businessProfile);
 
   const handleSaveProfile = (newProfile: BusinessProfile) => {
     setBusinessProfile(newProfile);
-    try {
-      localStorage.setItem(BUSINESS_PROFILE_STORAGE_KEY, JSON.stringify(newProfile));
-    } catch (err) {
-      console.warn('Failed to save business profile to localStorage:', err);
-    }
-    const hasRules = Boolean(
-      newProfile.role ||
-      newProfile.maxPenaltyPercent ||
-      newProfile.maxPaymentDays ||
-      newProfile.minNoticeDays ||
-      newProfile.disputeCity ||
-      newProfile.customRules?.trim()
-    );
-    if (hasRules && currentStep === 2) {
+    saveBusinessProfile(newProfile);
+    if (isBusinessProfileActive(newProfile) && currentStep === 2) {
       setPendingRecheck(true);
     }
   };
 
   const handleClearProfile = () => {
-    setBusinessProfile(defaultBusinessProfile);
+    setBusinessProfile(getDefaultBusinessProfile());
     setPendingRecheck(false);
-    try {
-      localStorage.removeItem(BUSINESS_PROFILE_STORAGE_KEY);
-    } catch (err) {
-      console.warn('Failed to clear business profile from localStorage:', err);
-    }
+    clearBusinessProfile();
   };
 
   // Navigation step: 1 = Upload, 2 = Trap Check, 3 = Stamping
@@ -268,6 +260,8 @@ export default function App() {
   const [isRechecking, setIsRechecking] = useState<boolean>(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<GeminiContractAnalysis | null>(null);
+  const [analysisLang, setAnalysisLang] = useState<Language | null>(null);
+  const [isTranslatingResults, setIsTranslatingResults] = useState<boolean>(false);
   const [expandedTraps, setExpandedTraps] = useState<Record<number, boolean>>({});
 
   // Step 2 Letter generation state
@@ -276,6 +270,7 @@ export default function App() {
   const [letterText, setLetterText] = useState<string>('');
   const [isLetterModalOpen, setIsLetterModalOpen] = useState<boolean>(false);
   const [copiedLetter, setCopiedLetter] = useState<boolean>(false);
+  const [isRiskWarningModalOpen, setIsRiskWarningModalOpen] = useState<boolean>(false);
 
   // Calculation overrides / user inputs for missing contract numbers
   const [customMonthlyPayment, setCustomMonthlyPayment] = useState<string>('');
@@ -294,6 +289,7 @@ export default function App() {
   const [record, setRecord] = useState<StampedRecord | null>(null);
   const isStep3Accessible = isStep3Unlocked || Boolean(record);
   const [txError, setTxError] = useState<string | null>(null);
+  const [rawTxError, setRawTxError] = useState<any | null>(null);
   const [copiedHash, setCopiedHash] = useState<boolean>(false);
   const [copiedCertificate, setCopiedCertificate] = useState<boolean>(false);
   const [copiedRecordTx, setCopiedRecordTx] = useState<string | null>(null);
@@ -321,16 +317,75 @@ export default function App() {
   const [originalFileName, setOriginalFileName] = useState<string | null>(null);
   const [replacementSource, setReplacementSource] = useState<'manual' | 'rechecked' | null>(null);
 
-  // Agreed upload modal and risk warning modal
+  // Agreed upload modal
   const [isAgreedUploadModalOpen, setIsAgreedUploadModalOpen] = useState<boolean>(false);
   const [stagedAgreedFile, setStagedAgreedFile] = useState<File | null>(null);
   const [agreedFileError, setAgreedFileError] = useState<string | null>(null);
   const [isAgreedDragging, setIsAgreedDragging] = useState<boolean>(false);
-  const [isRiskWarningModalOpen, setIsRiskWarningModalOpen] = useState<boolean>(false);
   const [isConfirmReturnHomeOpen, setIsConfirmReturnHomeOpen] = useState<boolean>(false);
+
+  // Language state (default 'en', persisted in localStorage with try/catch)
+  const [currentLang, setCurrentLang] = useState<Language>(() => {
+    return getLanguage();
+  });
+
+  const handleSetLang = (lang: Language) => {
+    setLanguage(lang);
+    setCurrentLang(lang);
+  };
+
+  // Ref and state for wallet dropdown menu
+  const walletMenuRef = useRef<HTMLDivElement>(null);
+  const [copiedWalletAddress, setCopiedWalletAddress] = useState<boolean>(false);
+
+  // Close wallet dropdown on click outside or Escape key
+  useEffect(() => {
+    if (!isWalletMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (walletMenuRef.current && !walletMenuRef.current.contains(event.target as Node)) {
+        setIsWalletMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsWalletMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isWalletMenuOpen]);
+
+  // Risk acknowledgement checkbox state for Step 3
+  const [isRiskAcknowledged, setIsRiskAcknowledged] = useState<boolean>(false);
+
+  // Counterparty verification link states
+  const [initialTxSignature, setInitialTxSignature] = useState<string>('');
+  const [copiedShareLink, setCopiedShareLink] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const agreedFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Check URL query parameter ?tx= on mount to open verification mode
+  useEffect(() => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const tx = urlParams.get('tx');
+      if (tx) {
+        setActiveMode('verify');
+        setInitialTxSignature(tx.trim());
+      }
+    } catch (e) {
+      console.warn('Failed to parse URL query param:', e);
+    }
+  }, []);
 
   // Active execution state checks across tabs and processes
   const isAuditRunning = isAnalyzing || isRechecking || isGeneratingLetter;
@@ -360,6 +415,23 @@ export default function App() {
     }
   }, [blockchainRecords]);
 
+  // Synchronize active transaction error message when language changes
+  useEffect(() => {
+    if (rawTxError) {
+      if (rawTxError.type === 'phantom_not_found') {
+        setTxError(t('step3.openWithPhantom', undefined, currentLang));
+      } else if (rawTxError.type === 'confirm_phantom') {
+        setTxError(t('step3.confirmPhantom', undefined, currentLang));
+      } else if (rawTxError.type === 'phantom_not_connected') {
+        setTxError(t('step3.phantomNotConnected', undefined, currentLang));
+      } else if (rawTxError.type === 'upload_first') {
+        setTxError(t('step1.uploadContractFirst', undefined, currentLang));
+      } else if (rawTxError.raw) {
+        setTxError(parseSolanaError(rawTxError.raw, currentLang));
+      }
+    }
+  }, [currentLang, rawTxError]);
+
   // Synchronize initial numbers for code-based calculations when analysis arrives
   useEffect(() => {
     if (analysisResult?.числа) {
@@ -379,15 +451,17 @@ export default function App() {
     setFileError(null);
     setAnalysisError(null);
     setAnalysisResult(null);
+    setAnalysisLang(null);
     setLetterText('');
     setIsAgreedVersion(false);
     setOriginalFileName(null);
     setReplacementSource(null);
     setIsStep3Unlocked(false);
+    setIsRiskAcknowledged(false);
 
-    const validation = validateContractFile(file);
+    const validation = validateContractFile(file, currentLang);
     if (!validation.valid) {
-      setFileError(validation.error || 'Ошибка формата файла.');
+      setFileError(validation.error || t('step1.fileFormatError', undefined, currentLang));
       setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       return false;
@@ -424,9 +498,9 @@ export default function App() {
   // Staging for agreed file modal
   const validateAndStageAgreedFile = (file: File) => {
     setAgreedFileError(null);
-    const validation = validateContractFile(file);
+    const validation = validateContractFile(file, currentLang);
     if (!validation.valid) {
-      setAgreedFileError(validation.error || 'Ошибка формата файла.');
+      setAgreedFileError(validation.error || t('step1.fileFormatError', undefined, currentLang));
       setStagedAgreedFile(null);
       if (agreedFileInputRef.current) agreedFileInputRef.current.value = '';
       return false;
@@ -459,25 +533,19 @@ export default function App() {
     }
   };
 
-  // Step 1 & Step 2: Optimized AI Trap Check via /api/analyze with SHA-256 caching
-  const startTrapCheck = async (targetFile?: File, customProfile?: BusinessProfile) => {
+  // Step 1 & Step 2: Optimized AI Trap Check via /api/analyze with SHA-256 caching & language support
+  const startTrapCheck = async (targetFile?: File, customProfile?: BusinessProfile, langOverride?: Language) => {
     if (isAnyRequestInFlight) return;
 
     const fileToAnalyze = targetFile || selectedFile;
     if (!fileToAnalyze) {
-      setFileError('Сначала загрузите договор');
+      setFileError(t('step1.uploadContractFirst'));
       return;
     }
 
+    const reqLang = langOverride || currentLang;
     const activeProfile = customProfile || businessProfile;
-    const hasFilledRules = Boolean(
-      activeProfile.role ||
-      activeProfile.maxPenaltyPercent ||
-      activeProfile.maxPaymentDays ||
-      activeProfile.minNoticeDays ||
-      activeProfile.disputeCity ||
-      activeProfile.customRules?.trim()
-    );
+    const hasFilledRules = isBusinessProfileActive(activeProfile);
 
     setSelectedFile(fileToAnalyze);
     setFileError(null);
@@ -490,13 +558,14 @@ export default function App() {
       const fileHash = await calculateFileSha256(fileToAnalyze);
 
       // Business Profile rules summary
-      const userRulesSummary = hasFilledRules ? formatProfileSummary(activeProfile) : '';
+      const userRulesSummary = hasFilledRules ? formatBusinessProfileForPrompt(activeProfile) : '';
       const cacheKey = userRulesSummary ? `${fileHash}_rules_${encodeURIComponent(userRulesSummary.slice(0, 50))}` : fileHash;
 
-      // 2. Check if result is already cached for this exact file + rules
-      const cached = getAnalysisCache(cacheKey);
+      // 2. Check if result is already cached for this exact file + rules + lang
+      const cached = getAnalysisCache(cacheKey, reqLang);
       if (cached) {
         setAnalysisResult(cached);
+        setAnalysisLang(reqLang);
         setExpandedTraps({ 0: true, 1: true });
         setPendingRecheck(false);
         return;
@@ -505,9 +574,9 @@ export default function App() {
       setIsAnalyzing(true);
 
       // 3. Extract text directly on the page (for PDF, DOCX, TXT) or resize image (PNG, JPG)
-      const prepared = await prepareFileForAnalysis(fileToAnalyze);
+      const prepared = await prepareFileForAnalysis(fileToAnalyze, reqLang);
 
-      // 4. Send pure text / resized image to API with user rules
+      // 4. Send pure text / resized image to API with user rules and selected language
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: {
@@ -515,6 +584,7 @@ export default function App() {
         },
         body: JSON.stringify({
           action: 'check_traps',
+          lang: reqLang,
           fileText: prepared.fileText,
           fileBase64: prepared.fileBase64,
           mimeType: prepared.mimeType,
@@ -525,19 +595,20 @@ export default function App() {
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        const errorMsg = data.error || 'Не удалось проанализировать договор. Попробуйте повторить запрос.';
+        const errorMsg = data.error || t('step2.analysisFailedMsg', undefined, reqLang);
         setAnalysisError(errorMsg);
         setIsAnalyzing(false);
         return;
       }
 
       setAnalysisResult(data);
-      setAnalysisCache(cacheKey, data);
+      setAnalysisLang(reqLang);
+      setAnalysisCache(cacheKey, reqLang, data);
       setExpandedTraps({ 0: true, 1: true });
       setPendingRecheck(false);
     } catch (err: any) {
       console.error('Trap check error:', err);
-      setAnalysisError(err?.message || 'Ошибка связи с сервером анализа. Проверьте интернет-соединение и повторите попытку.');
+      setAnalysisError(err?.message || t('step2.analysisConnError', undefined, reqLang));
     } finally {
       setIsAnalyzing(false);
     }
@@ -545,13 +616,14 @@ export default function App() {
 
   const handleRecheckWithProfile = async () => {
     if (isAnyRequestInFlight || !selectedFile) return;
-    await startTrapCheck(selectedFile, businessProfile);
+    await startTrapCheck(selectedFile, businessProfile, currentLang);
   };
 
   // Step 2: Optimized Recheck of agreed version (Variant A) - only new text + previous traps list
-  const startAgreedRecheck = async (newAgreedFile: File) => {
+  const startAgreedRecheck = async (newAgreedFile: File, langOverride?: Language) => {
     if (isAnyRequestInFlight) return;
 
+    const reqLang = langOverride || currentLang;
     setFileError(null);
     setAnalysisError(null);
     setCurrentStep(2);
@@ -564,13 +636,14 @@ export default function App() {
       const newHash = await calculateFileSha256(newAgreedFile);
       const recheckKey = `${prevHash}_${newHash}`;
 
-      // 2. Check cache
-      const cached = getRecheckCache(recheckKey);
+      // 2. Check cache with language
+      const cached = getRecheckCache(recheckKey, reqLang);
       if (cached) {
         setSelectedFile(newAgreedFile);
         setIsAgreedVersion(true);
         setReplacementSource('rechecked');
         setAnalysisResult(cached);
+        setAnalysisLang(reqLang);
         setExpandedTraps({ 0: true });
         return;
       }
@@ -578,11 +651,11 @@ export default function App() {
       setIsRechecking(true);
 
       // 3. Extract text on the page (for PDF, DOCX, TXT) or resize image
-      const prepared = await prepareFileForAnalysis(newAgreedFile);
+      const prepared = await prepareFileForAnalysis(newAgreedFile, reqLang);
 
       // 4. Send only new version text and previous traps summary (clause & essence, no long quotes)
       const prevTrapsList = (analysisResult?.ловушки || []).map((t: any, i: number) => ({
-        пункт: t.пункт || `№${i + 1}`,
+        пункт: t.пункт || `${reqLang === 'en' ? 'Clause #' : '№'}${i + 1}`,
         суть: t.опасность || t.чем_опасно || '',
       }));
 
@@ -593,6 +666,7 @@ export default function App() {
         },
         body: JSON.stringify({
           action: 'recheck_agreed',
+          lang: reqLang,
           fileText: prepared.fileText,
           fileBase64: prepared.fileBase64,
           mimeType: prepared.mimeType,
@@ -603,7 +677,7 @@ export default function App() {
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        const errorMsg = data.error || 'Не удалось выполнить повторную проверку. Попробуйте снова.';
+        const errorMsg = data.error || t('step2.recheckFailedMsg', undefined, reqLang);
         setAnalysisError(errorMsg);
         setIsRechecking(false);
         return;
@@ -622,20 +696,36 @@ export default function App() {
       setIsAgreedVersion(true);
       setReplacementSource('rechecked');
       setAnalysisResult(mergedResult);
-      setRecheckCache(recheckKey, mergedResult);
+      setAnalysisLang(reqLang);
+      setRecheckCache(recheckKey, reqLang, mergedResult);
       setExpandedTraps({ 0: true });
     } catch (err: any) {
       console.error('Recheck error:', err);
-      setAnalysisError(err?.message || 'Ошибка связи с сервером при повторной проверке.');
+      setAnalysisError(err?.message || t('step2.recheckConnError', undefined, reqLang));
     } finally {
       setIsRechecking(false);
+    }
+  };
+
+  // Re-run AI analysis in newly chosen language on demand
+  const handleTranslateResults = async () => {
+    if (isAnyRequestInFlight || !selectedFile) return;
+    setIsTranslatingResults(true);
+    try {
+      if (isAgreedVersion && replacementSource === 'rechecked') {
+        await startAgreedRecheck(selectedFile, currentLang);
+      } else {
+        await startTrapCheck(selectedFile, businessProfile, currentLang);
+      }
+    } finally {
+      setIsTranslatingResults(false);
     }
   };
 
   // Direct transition from Step 1 to Step 3 without trap analysis
   const handleDirectToStamping = () => {
     if (!selectedFile) {
-      setFileError('Сначала загрузите договор');
+      setFileError(t('step1.uploadContractFirst'));
       return;
     }
     setIsStep3Unlocked(true);
@@ -643,36 +733,29 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Navigate to stamping with warning protection if risky contract
+  // Navigate to stamping: trigger risk warning modal if risks detected
   const handleProceedToStamping = () => {
     if (!selectedFile) {
-      setFileError('Сначала загрузите договор');
+      setFileError(t('step1.uploadContractFirst'));
       setCurrentStep(1);
       return;
     }
 
-    const riskLevel = analysisResult?.риск || analysisResult?.общий_уровень_риска;
-    const hasRisks = analysisResult && (
-      riskLevel === 'высокий' ||
-      riskLevel === 'средний' ||
-      (analysisResult.ловушки && analysisResult.ловушки.length > 0)
-    );
-
-    // If it's an unreplaced original draft and risks are detected, show the warning modal
-    if (!isAgreedVersion && hasRisks) {
+    if (hasContractRisks && !isRiskAcknowledged) {
       setIsRiskWarningModalOpen(true);
-    } else {
-      setIsStep3Unlocked(true);
-      setCurrentStep(3);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
     }
+
+    setIsStep3Unlocked(true);
+    setCurrentStep(3);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Apply agreed replacement file: Scenario A (recheck) or Scenario B (direct stamp)
   const handleApplyAgreedFile = async (scenario: 'recheck' | 'direct_stamp') => {
     if (!stagedAgreedFile || isAnyRequestInFlight) return;
 
-    const prevName = originalFileName || selectedFile?.name || 'Исходный черновик';
+    const prevName = originalFileName || selectedFile?.name || t('step2.originalDraftBadge', undefined, currentLang);
 
     setOriginalFileName(prevName);
 
@@ -682,25 +765,27 @@ export default function App() {
     setIsAgreedUploadModalOpen(false);
 
     if (scenario === 'recheck') {
-      await startAgreedRecheck(newDoc);
+      setIsRiskAcknowledged(false);
+      await startAgreedRecheck(newDoc, currentLang);
     } else {
       setSelectedFile(newDoc);
       setIsAgreedVersion(true);
       setReplacementSource('manual');
+      setIsRiskAcknowledged(false);
       setIsStep3Unlocked(true);
       setCurrentStep(3);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
-  // Step 2: Optimized Counterpart Letter generation (sends ONLY traps, cached by file hash)
+  // Step 2: Optimized Counterpart Letter generation (sends ONLY traps, cached by file hash & language)
   const handleGenerateLetter = async () => {
     if (!analysisResult?.ловушки || analysisResult.ловушки.length === 0) {
       return;
     }
     if (isAnyRequestInFlight) return;
 
-    // Check letter cache by file hash
+    // Check letter cache by file hash + language
     let fileHash = 'default';
     if (selectedFile) {
       try {
@@ -708,7 +793,7 @@ export default function App() {
       } catch {}
     }
 
-    const cachedLetter = getLetterCache(fileHash);
+    const cachedLetter = getLetterCache(fileHash, currentLang);
     if (cachedLetter) {
       setLetterText(cachedLetter);
       setIsLetterModalOpen(true);
@@ -726,6 +811,7 @@ export default function App() {
         },
         body: JSON.stringify({
           action: 'generate_letter',
+          lang: currentLang,
           traps: analysisResult.ловушки,
         }),
       });
@@ -733,17 +819,17 @@ export default function App() {
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        setLetterError(data.error || 'Не удалось подготовить письмо. Пожалуйста, повторите.');
+        setLetterError(data.error || t('step2.letterError'));
         return;
       }
 
       const letter = data.letter || '';
       setLetterText(letter);
-      setLetterCache(fileHash, letter);
+      setLetterCache(fileHash, currentLang, letter);
       setIsLetterModalOpen(true);
     } catch (err: any) {
       console.error('Letter generation error:', err);
-      setLetterError('Ошибка связи с сервером при подготовке письма. Повторите попытку.');
+      setLetterError(t('step2.networkError'));
     } finally {
       setIsGeneratingLetter(false);
     }
@@ -796,7 +882,7 @@ export default function App() {
       return true;
     } catch (err: any) {
       console.warn('Phantom connection error/dismissed:', err);
-      setTxError(parseSolanaError(err));
+      setTxError(parseSolanaError(err, currentLang));
       return false;
     } finally {
       setIsConnectingWallet(false);
@@ -865,10 +951,12 @@ export default function App() {
   // Step 3: Real Transaction to Solana Devnet via Phantom
   const handleStamp = async () => {
     setTxError(null);
+    setRawTxError(null);
     setFileError(null);
 
     if (!selectedFile) {
-      setFileError('Сначала загрузите договор');
+      setFileError(t.step1.uploadContractFirst);
+      setRawTxError({ type: 'upload_first' });
       setCurrentStep(1);
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
@@ -877,21 +965,24 @@ export default function App() {
     let provider = getPhantomProvider();
     if (!provider) {
       setPhantomNotFound(true);
-      setTxError('Откройте приложение в отдельной вкладке с установленным Phantom для отправки транзакции.');
+      setRawTxError({ type: 'phantom_not_found' });
+      setTxError(t('step3.openWithPhantom', undefined, currentLang));
       return;
     }
 
     if (!provider.publicKey) {
       const connected = await handleConnectWallet();
       if (!connected) {
-        setTxError('Для отправки транзакции в Solana devnet необходимо подтвердить подключение кошелька Phantom.');
+        setRawTxError({ type: 'confirm_phantom' });
+        setTxError(t('step3.confirmPhantom', undefined, currentLang));
         return;
       }
       provider = getPhantomProvider();
     }
 
     if (!provider || !provider.publicKey) {
-      setTxError('Кошелёк Phantom не подключён.');
+      setRawTxError({ type: 'phantom_not_connected' });
+      setTxError(t('step3.phantomNotConnected', undefined, currentLang));
       return;
     }
 
@@ -902,18 +993,9 @@ export default function App() {
       const { signature, memoText } = await sendKelisimMemoTransaction(provider, fileHash);
 
       const now = new Date();
-      const formattedDate = new Intl.DateTimeFormat('ru-RU', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        timeZone: 'Asia/Almaty',
-      }).format(now) + ' (GMT+5)';
-
       const currentPubkey = provider.publicKey.toString();
       const explorerUrl = `https://explorer.solana.com/tx/${signature}?cluster=devnet`;
+      const formattedDate = formatDateTime(now, currentLang);
 
       getDevnetBalance(currentPubkey).then(setWalletBalance);
 
@@ -924,6 +1006,7 @@ export default function App() {
         documentName: selectedFile.name,
         fileHash,
         timestamp: formattedDate,
+        timestampMs: now.getTime(),
         explorerUrl,
       };
 
@@ -931,24 +1014,27 @@ export default function App() {
 
       setRecord({
         fileName: selectedFile.name,
-        fileSize: formatFileSize(selectedFile.size),
+        fileSize: formatFileSize(selectedFile.size, currentLang),
         hash: fileHash,
         timestamp: formattedDate,
+        timestampMs: now.getTime(),
         network: 'Solana (devnet)',
-        status: 'Зафиксирован',
-        recordedBy: `Зафиксировано с кошелька ${formatAddress(currentPubkey)}`,
-        explanation: 'Если в документе изменить даже одну запятую, отпечаток не совпадёт',
+        status: t('step3.statusFixed', undefined, currentLang),
+        recordedBy: t.step3.recordedFromWallet(formatAddress(currentPubkey)),
+        recordedByAddress: formatAddress(currentPubkey),
+        explanation: t.step3.explanationTitle,
         signature,
         explorerUrl,
         versionLabel: isAgreedVersion
-          ? `Согласованная версия v2 ${replacementSource === 'manual' ? '(заменена вручную)' : '(проверена повторно)'}`
-          : 'Исходный черновик',
+          ? `${t('step2.agreedVersionV2', undefined, currentLang)} ${replacementSource === 'manual' ? t('step2.manualReplacementBadge', undefined, currentLang) : t('step2.recheckedReplacementBadge', undefined, currentLang)}`
+          : t('step2.originalDraftBadge', undefined, currentLang),
         originalFileName: isAgreedVersion && originalFileName ? originalFileName : undefined,
       });
 
     } catch (err: any) {
       console.error('Solana transaction failed:', err);
-      const friendlyMsg = parseSolanaError(err);
+      setRawTxError({ raw: err });
+      const friendlyMsg = parseSolanaError(err, currentLang);
       setTxError(friendlyMsg);
     } finally {
       setIsProcessingStamp(false);
@@ -970,11 +1056,12 @@ export default function App() {
     setOriginalFileName(null);
     setReplacementSource(null);
     setIsAgreedUploadModalOpen(false);
-    setIsRiskWarningModalOpen(false);
+    setIsRiskAcknowledged(false);
     setStagedAgreedFile(null);
     setAgreedFileError(null);
     setIsAnalyzing(false);
     setAnalysisResult(null);
+    setAnalysisLang(null);
     setAnalysisError(null);
     setLetterText('');
     setTxError(null);
@@ -992,7 +1079,7 @@ export default function App() {
 
   const handleHeaderLogoClick = () => {
     if (isAnyExecutionRunning) {
-      setBlockedTabNotice('Действие заблокировано: дождитесь завершения текущей операции (анализ / фиксация / проверка).');
+      setBlockedTabNotice(t('tabs.actionLockedNotice'));
       return;
     }
     const hasProgress = Boolean(
@@ -1015,15 +1102,13 @@ export default function App() {
   const handleTabClick = (targetMode: 'audit' | 'verify') => {
     if (targetMode === 'verify' && isVerifyTabDisabled) {
       const reason = isFixationRunning
-        ? 'Нельзя перейти во вкладку «Проверить документ»: выполняется фиксация файла в блокчейне Solana. Дождитесь подтверждения транзакции во избежание сбоев.'
-        : 'Нельзя перейти во вкладку «Проверить документ»: выполняется аудит договора. Дождитесь окончания анализа во избежание сбоев.';
+        ? t.tabs.blockedToVerifyStamping
+        : t.tabs.blockedToVerifyAudit;
       setBlockedTabNotice(reason);
       return;
     }
     if (targetMode === 'audit' && isAuditTabDisabled) {
-      setBlockedTabNotice(
-        'Нельзя перейти во вкладку «Аудит и фиксация»: прямо сейчас выполняется проверка документа в Solana devnet. Дождитесь завершения проверки во избежание сбоев.'
-      );
+      setBlockedTabNotice(t.tabs.blockedToAuditVerifying);
       return;
     }
     setBlockedTabNotice(null);
@@ -1032,11 +1117,11 @@ export default function App() {
 
   const handleStepClick = (step: 1 | 2 | 3) => {
     if (isAuditRunning) {
-      setBlockedTabNotice('Переход между шагами заблокирован: выполняется анализ договора. Дождитесь завершения.');
+      setBlockedTabNotice(t.tabs.stepBlockedAudit);
       return;
     }
     if (isFixationRunning) {
-      setBlockedTabNotice('Переход между шагами заблокирован: транзакция фиксации отправляется в блокчейн Solana.');
+      setBlockedTabNotice(t.tabs.stepBlockedStamping);
       return;
     }
     setBlockedTabNotice(null);
@@ -1060,6 +1145,23 @@ export default function App() {
   const hasObligationParams = currentPayment != null && !isNaN(currentPayment) && currentMonths != null && !isNaN(currentMonths);
   const calculatedObligation = hasObligationParams ? currentPayment * currentMonths : null;
 
+  // Check if contract has detected risks (used for requirement 4 checkbox)
+  const hasContractRisks = Boolean(
+    !isAgreedVersion &&
+    analysisResult &&
+    (
+      analysisResult.общий_уровень_риска === 'высокий' ||
+      analysisResult.общий_уровень_риска === 'high' ||
+      analysisResult.общий_уровень_риска === 'средний' ||
+      analysisResult.общий_уровень_риска === 'medium' ||
+      analysisResult.риск === 'высокий' ||
+      analysisResult.риск === 'high' ||
+      analysisResult.риск === 'средний' ||
+      analysisResult.риск === 'medium' ||
+      (analysisResult.ловушки && analysisResult.ловушки.length > 0)
+    )
+  );
+
   return (
     <div className="min-h-screen bg-[#090d10] text-slate-100 flex flex-col justify-between selection:bg-emerald-500/25 selection:text-emerald-300">
       {/* Background glow effects */}
@@ -1070,131 +1172,176 @@ export default function App() {
 
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-[#090d10]/95 backdrop-blur-md">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 h-18 flex items-center justify-between">
-          {/* Logo & Tag */}
+        <div className="max-w-4xl mx-auto px-3 sm:px-6 h-16 sm:h-18 flex items-center justify-between gap-2">
+          {/* Logo */}
           <KelisimLogo 
             onClick={handleHeaderLogoClick} 
             size="md"
           />
 
-          {/* Connect Wallet Button */}
-          <div className="relative">
-            {walletAddress ? (
-              <div className="flex items-center gap-2">
-                {/* Balance in SOL on Devnet */}
-                <div 
-                  className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-xs font-mono font-medium shadow-sm"
-                  title="Баланс кошелька в сети Solana Devnet"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>{walletBalance ?? '0 SOL'}</span>
-                  <span className="text-[10px] text-slate-400 font-sans">devnet</span>
-                </div>
-
-                {/* Address Button */}
-                <button
-                  type="button"
-                  onClick={() => setIsWalletMenuOpen(!isWalletMenuOpen)}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-mono font-medium bg-slate-900 hover:bg-slate-800 text-white border border-emerald-500/40 hover:border-emerald-400 transition-all shadow-sm"
-                  title="Управление подключенным кошельком Phantom"
-                >
-                  <div className="w-2 h-2 rounded-full bg-emerald-400" />
-                  <span>{formatAddress(walletAddress)}</span>
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                </button>
-
-                {/* Dropdown Menu */}
-                {isWalletMenuOpen && (
-                  <>
-                    <div 
-                      className="fixed inset-0 z-40 bg-black/20" 
-                      onClick={() => setIsWalletMenuOpen(false)} 
-                    />
-
-                    <div className="absolute right-0 top-full mt-2 w-72 sm:w-80 bg-[#0e141a] border border-slate-700/90 rounded-2xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.95)] z-50 animate-in fade-in zoom-in-95 duration-150 text-xs">
-                      <div className="pb-3 border-b border-slate-800">
-                        <div className="text-[11px] text-slate-400 flex items-center justify-between">
-                          <span className="font-semibold text-slate-300">Phantom Wallet</span>
-                          <span className="text-emerald-400 font-semibold bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                            Devnet
-                          </span>
-                        </div>
-                        <div className="font-mono text-xs text-white break-all select-all mt-1.5 bg-[#080c0f] p-2 rounded-lg border border-slate-800/80">
-                          {walletAddress}
-                        </div>
-                        <div className="mt-2.5 flex items-center justify-between text-xs text-emerald-400 font-mono">
-                          <span className="text-slate-400 font-sans">Баланс:</span>
-                          <span className="font-semibold text-emerald-300 text-sm">{walletBalance ?? '0 SOL'}</span>
-                        </div>
-                      </div>
-
-                      <div className="pt-2 space-y-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(walletAddress);
-                            setIsWalletMenuOpen(false);
-                          }}
-                          className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white flex items-center gap-2 transition-colors"
-                        >
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Скопировать адрес</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleRefreshBalance();
-                          }}
-                          className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white flex items-center gap-2 transition-colors"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                          <span>Обновить баланс</span>
-                        </button>
-
-                        <a
-                          href={`https://explorer.solana.com/address/${walletAddress}?cluster=devnet`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white flex items-center gap-2 transition-colors"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          <span>Смотреть в Solana Explorer</span>
-                        </a>
-
-                        <button
-                          type="button"
-                          onClick={handleDisconnectWallet}
-                          className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-rose-950/30 text-rose-400 hover:text-rose-300 flex items-center gap-2 border-t border-slate-800/80 mt-1.5 pt-2 transition-colors"
-                        >
-                          <LogOut className="w-3.5 h-3.5" />
-                          <span>Отключить кошелёк</span>
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : (
+          {/* Right Header items: Language Switcher & Wallet */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Language Switcher: First EN, then RU. Left EN, Right RU */}
+            <div className="flex items-center text-xs bg-slate-900/90 border border-slate-800 rounded-xl p-0.5 shrink-0 shadow-xs">
               <button
                 type="button"
-                onClick={handleConnectWallet}
-                disabled={isConnectingWallet}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-800 hover:border-emerald-500/50 transition-all active:scale-95 shadow-sm disabled:opacity-75"
+                onClick={() => handleSetLang('en')}
+                className={`px-2 sm:px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
+                  currentLang === 'en'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title={t('header.langEn', undefined, currentLang)}
               >
-                {isConnectingWallet ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-                    <span>Подключение...</span>
-                  </>
-                ) : (
-                  <>
-                    <Wallet className="w-4 h-4 text-emerald-400" />
-                    <span>Подключить кошелёк</span>
-                  </>
-                )}
+                EN
               </button>
-            )}
+              <button
+                type="button"
+                onClick={() => handleSetLang('ru')}
+                className={`px-2 sm:px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
+                  currentLang === 'ru'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title={t('header.langRu', undefined, currentLang)}
+              >
+                RU
+              </button>
+            </div>
+
+            {/* Connect Wallet Button & Menu */}
+            <div className="relative shrink-0" ref={walletMenuRef}>
+              {walletAddress ? (
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  {/* Balance in SOL on Devnet: hidden on small screens */}
+                  <div 
+                    className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-xs font-mono font-medium shadow-sm"
+                    title={t.header.walletBalanceTooltip}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>{walletBalance ?? '0 SOL'}</span>
+                    <span className="text-[10px] text-slate-400 font-sans">devnet</span>
+                  </div>
+
+                  {/* Relative wrapper for Address Button & Dropdown Menu */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setIsWalletMenuOpen(!isWalletMenuOpen)}
+                      className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-mono font-medium bg-slate-900 hover:bg-slate-800 text-white border border-emerald-500/40 hover:border-emerald-400 transition-all shadow-sm cursor-pointer"
+                      title={t.header.walletManageTooltip}
+                      aria-expanded={isWalletMenuOpen}
+                    >
+                      <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                      <span>{formatAddress(walletAddress)}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform duration-150 ${isWalletMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {/* Dropdown Menu */}
+                    {isWalletMenuOpen && (
+                      <div className="absolute right-0 top-full mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-[#0e141a] border border-slate-700/90 rounded-2xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.95)] z-[100] animate-in fade-in zoom-in-95 duration-150 text-xs">
+                        <div className="pb-3 border-b border-slate-800">
+                          <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                            <span className="font-semibold text-slate-300">{t.header.phantomWallet}</span>
+                            <span className="text-emerald-400 font-semibold bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 text-[10px] uppercase font-mono tracking-wider">
+                              devnet
+                            </span>
+                          </div>
+
+                          {/* Shortened address with Copy button */}
+                          <div className="mt-2.5 flex items-center justify-between gap-2 bg-[#080c0f] p-2 rounded-lg border border-slate-800/80">
+                            <span className="font-mono text-xs text-white select-all break-all">
+                              {formatAddress(walletAddress)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(walletAddress);
+                                setCopiedWalletAddress(true);
+                                setTimeout(() => setCopiedWalletAddress(false), 2000);
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors text-[11px] font-sans shrink-0 cursor-pointer"
+                              title={t.header.copyAddress}
+                            >
+                              {copiedWalletAddress ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-400" />
+                                  <span className="text-emerald-400">{t.header.copied}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3 text-slate-400" />
+                                  <span>{t.header.copy}</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          {/* SOL Balance */}
+                          <div className="mt-2.5 flex items-center justify-between text-xs text-emerald-400 font-mono">
+                            <span className="text-slate-400 font-sans">{t.header.balance}:</span>
+                            <span className="font-semibold text-emerald-300 text-sm">{walletBalance ?? '0 SOL'}</span>
+                          </div>
+                        </div>
+
+                        {/* Dropdown actions */}
+                        <div className="pt-2 space-y-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleRefreshBalance();
+                            }}
+                            className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                            <span>{t.header.refreshBalance}</span>
+                          </button>
+
+                          <a
+                            href={`https://explorer.solana.com/address/${walletAddress}?cluster=devnet`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white flex items-center gap-2 transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                            <span>{t.header.viewInExplorer}</span>
+                          </a>
+
+                          <button
+                            type="button"
+                            onClick={handleDisconnectWallet}
+                            className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-rose-950/30 text-rose-400 hover:text-rose-300 flex items-center gap-2 border-t border-slate-800/80 mt-1.5 pt-2 transition-colors font-medium cursor-pointer"
+                          >
+                            <LogOut className="w-3.5 h-3.5" />
+                            <span>{t.header.disconnectWallet}</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnectWallet}
+                  disabled={isConnectingWallet}
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-800 hover:border-emerald-500/50 transition-all active:scale-95 shadow-sm disabled:opacity-75 cursor-pointer"
+                >
+                  {isConnectingWallet ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                      <span className="hidden min-[360px]:inline">{t.header.connecting}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
+                      <span className="hidden min-[380px]:inline">{t.header.wallet}</span>
+                      <span className="min-[380px]:hidden">{t.header.login}</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1205,7 +1352,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
                 <span className="font-medium">
-                  Откройте приложение в отдельной вкладке с установленным Phantom
+                  {t.header.phantomNotFoundTitle}
                 </span>
               </div>
               <div className="flex items-center gap-3 text-xs">
@@ -1216,13 +1363,13 @@ export default function App() {
                   className="text-amber-300 hover:text-white underline underline-offset-2 flex items-center gap-1 font-medium"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Открыть в новой вкладке</span>
+                  <span>{t.header.openInNewTab}</span>
                 </a>
                 <button
                   type="button"
                   onClick={() => setPhantomNotFound(false)}
-                  className="text-amber-400 hover:text-white p-0.5"
-                  title="Закрыть уведомление"
+                  className="text-amber-400 hover:text-white p-0.5 cursor-pointer"
+                  title={t.header.closeNotice}
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1239,14 +1386,14 @@ export default function App() {
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs text-slate-400 mb-3">
             <Lock className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Для малого бизнеса и предпринимателей Казахстана</span>
+            <span>{t('hero.badge')}</span>
           </div>
 
           <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-2">
-            Kelisim
+            {t('hero.title')}
           </h1>
           <p className="text-base sm:text-lg text-emerald-400/90 font-medium tracking-tight">
-            Проверь договор. Зафиксируй версию. Докажи её.
+            {t('hero.tagline')}
           </p>
         </div>
 
@@ -1256,14 +1403,14 @@ export default function App() {
             <div className="flex items-start gap-2.5">
               <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
               <div>
-                <div className="font-semibold text-rose-300">Сообщение о транзакции</div>
+                <div className="font-semibold text-rose-300">{t('step1.txMessageTitle')}</div>
                 <div className="mt-0.5 leading-relaxed">{txError}</div>
               </div>
             </div>
             <button
               type="button"
               onClick={() => setTxError(null)}
-              className="text-rose-400 hover:text-white p-1"
+              className="text-rose-400 hover:text-white p-1 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -1275,12 +1422,12 @@ export default function App() {
           <div className="mb-6 p-4 rounded-xl bg-amber-950/30 border border-amber-500/30 text-xs sm:text-sm text-amber-200 flex items-center justify-between gap-3 animate-in fade-in duration-200">
             <div className="flex items-center gap-2.5">
               <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
-              <span className="font-semibold">{fileError}</span>
+              <span className="font-semibold">{getLocalizedErrorMessage(fileError, currentLang)}</span>
             </div>
             <button
               type="button"
               onClick={() => setFileError(null)}
-              className="text-amber-400 hover:text-white p-1"
+              className="text-amber-400 hover:text-white p-1 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -1293,15 +1440,15 @@ export default function App() {
             <div className="flex items-start gap-2.5">
               <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-semibold text-amber-300">Вход во вкладку временно недоступен:</span>
+                <span className="font-semibold text-amber-300">{t('tabs.tabBlockedNoticeTitle')}</span>
                 <p className="mt-0.5 text-amber-200/90 leading-relaxed">{blockedTabNotice}</p>
               </div>
             </div>
             <button
               type="button"
               onClick={() => setBlockedTabNotice(null)}
-              className="text-amber-400 hover:text-white p-0.5 shrink-0"
-              title="Закрыть уведомление"
+              className="text-amber-400 hover:text-white p-0.5 shrink-0 cursor-pointer"
+              title={t('header.closeNotice')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -1318,15 +1465,15 @@ export default function App() {
               </span>
               <span className="text-slate-200 font-medium">
                 {isFixationRunning
-                  ? 'Идёт фиксация файла в Solana: переключение вкладок заблокировано'
+                  ? t('tabs.stampingRunningBanner')
                   : isAuditRunning
-                  ? 'Идёт аудит договора: переключение вкладок заблокировано'
-                  : 'Идёт проверка документа: переключение вкладок заблокировано'}
+                  ? t('tabs.auditRunningBanner')
+                  : t('tabs.verifyRunningBanner')}
               </span>
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
               <Lock className="w-3 h-3 text-amber-400" />
-              <span>Защита</span>
+              <span>{t('tabs.protection')}</span>
             </div>
           </div>
         )}
@@ -1348,8 +1495,8 @@ export default function App() {
               }`}
               title={
                 isAuditTabDisabled
-                  ? 'Вкладка недоступна: выполняется проверка документа в Solana. Дождитесь завершения во избежание сбоев.'
-                  : 'Аудит и фиксация договора'
+                  ? t('tabs.auditDisabledTooltip')
+                  : t('tabs.auditTabTitle')
               }
             >
               {isAuditTabDisabled ? (
@@ -1357,10 +1504,10 @@ export default function App() {
               ) : (
                 <ShieldCheck className="w-4 h-4 text-emerald-400" />
               )}
-              <span>Аудит и фиксация</span>
+              <span>{t('tabs.auditAndStamping')}</span>
               {isAuditTabDisabled && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-medium border border-amber-500/25">
-                  Заблокировано
+                  {t('tabs.locked')}
                 </span>
               )}
             </button>
@@ -1379,10 +1526,10 @@ export default function App() {
               }`}
               title={
                 isFixationRunning
-                  ? 'Вкладка недоступна: выполняется фиксация файла в блокчейне Solana. Дождитесь подтверждения транзакции.'
+                  ? t('tabs.verifyDisabledStampingTooltip')
                   : isAuditRunning
-                  ? 'Вкладка недоступна: выполняется аудит договора. Дождитесь завершения анализа.'
-                  : 'Проверить документ без подключения кошелька'
+                  ? t('tabs.verifyDisabledAuditTooltip')
+                  : t('tabs.verifyTabTitle')
               }
             >
               {isVerifyTabDisabled ? (
@@ -1390,14 +1537,14 @@ export default function App() {
               ) : (
                 <FileSearch className="w-4 h-4 text-emerald-400" />
               )}
-              <span>Проверить документ</span>
+              <span>{t('tabs.verifyDocument')}</span>
               {isVerifyTabDisabled ? (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-medium border border-amber-500/25">
-                  {isFixationRunning ? 'Идёт фиксация…' : 'Идёт аудит…'}
+                  {isFixationRunning ? t('tabs.stampingInProgress') : t('tabs.auditInProgress')}
                 </span>
               ) : (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-medium border border-emerald-500/30">
-                  без кошелька
+                  {t('tabs.noWallet')}
                 </span>
               )}
             </button>
@@ -1406,7 +1553,11 @@ export default function App() {
 
         {/* MODE: ПРОВЕРКА ДОКУМЕНТА БЕЗ КОШЕЛЬКА */}
         {activeMode === 'verify' ? (
-          <DocumentVerification onVerifyingChange={setIsVerifyingDocument} />
+          <DocumentVerification 
+            onVerifyingChange={setIsVerifyingDocument} 
+            initialSignature={initialTxSignature}
+            lang={currentLang}
+          />
         ) : (
           <>
             {/* 3-Step Indicator Bar */}
@@ -1426,10 +1577,10 @@ export default function App() {
                   }`}
                   title={
                     isAuditRunning
-                      ? 'Переход заблокирован: выполняется анализ договора'
+                      ? t('steps.blockedAudit')
                       : isFixationRunning
-                      ? 'Переход заблокирован: выполняется фиксация в блокчейне'
-                      : 'Шаг 1: Загрузка документа'
+                      ? t('steps.blockedStamping')
+                      : t('steps.step1Title')
                   }
                 >
                   <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
@@ -1437,7 +1588,7 @@ export default function App() {
                   }`}>
                     {isAuditRunning || isFixationRunning ? <Lock className="w-2.5 h-2.5 text-slate-600" /> : '1'}
                   </span>
-                  <span className="truncate">Загрузка</span>
+                  <span className="truncate">{t('steps.step1')}</span>
                 </button>
 
                 {/* Step 2 button */}
@@ -1454,12 +1605,12 @@ export default function App() {
                   }`}
                   title={
                     isFixationRunning
-                      ? 'Переход заблокирован: выполняется фиксация в блокчейне'
+                      ? t('steps.blockedStamping')
                       : !selectedFile
-                      ? 'Сначала вложите договор на Шаге 1'
+                      ? t('steps.step2LockedNoFile')
                       : !isStep2Unlocked
-                      ? 'Нажмите «Проверить на ловушки» на Шаге 1, чтобы перейти к проверке'
-                      : 'Перейти к результатам проверки'
+                      ? t('steps.step2LockedNoCheck')
+                      : t('steps.step2UnlockedTitle')
                   }
                 >
                   <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
@@ -1475,7 +1626,7 @@ export default function App() {
                       '2'
                     )}
                   </span>
-                  <span className="truncate">Проверка на ловушки</span>
+                  <span className="truncate">{t('steps.step2')}</span>
                 </button>
 
                 {/* Step 3 button */}
@@ -1492,12 +1643,12 @@ export default function App() {
                   }`}
                   title={
                     isAuditRunning
-                      ? 'Переход заблокирован: выполняется анализ договора'
+                      ? t('steps.blockedAudit')
                       : !selectedFile
-                      ? 'Сначала загрузите договор на Шаге 1'
+                      ? t('steps.step3LockedNoFile')
                       : !isStep3Accessible
-                      ? 'Вкладка заблокирована. Загрузите файл и нажмите «Перейти к фиксации напрямую» или завершите проверку'
-                      : 'Перейти к фиксации договора'
+                      ? t('steps.step3LockedNotDone')
+                      : t('steps.step3UnlockedTitle')
                   }
                 >
                   <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
@@ -1513,7 +1664,7 @@ export default function App() {
                       '3'
                     )}
                   </span>
-                  <span className="truncate">Фиксация</span>
+                  <span className="truncate">{t('steps.step3')}</span>
                 </button>
               </div>
             </div>
@@ -1534,40 +1685,74 @@ export default function App() {
             {/* Top Toolbar of Step 1: Status & "Мои правила" Button */}
             <div className="flex items-center justify-between gap-3 mb-4">
               <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                Загрузка документа
+                {t('step1.toolbarTitle')}
               </span>
               <button
                 type="button"
                 disabled={isAnyExecutionRunning}
                 onClick={() => setIsProfileModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/80 hover:border-emerald-500/40 text-xs font-medium transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Настроить персональные правила бизнеса"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/80 hover:border-emerald-500/40 text-xs font-medium transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                title={t('step1.myRulesTooltip')}
               >
                 <Settings className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Мои правила</span>
+                <span>{t('step1.myRulesBtn')}</span>
                 {isProfileFilled && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Правила настроены" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title={t('step1.rulesConfiguredTooltip')} />
                 )}
               </button>
             </div>
 
-            {/* Active Rules Banner on Step 1 */}
+            {/* Active Rules Block on Step 1 */}
             {isProfileFilled && (
-              <div className="mb-4 p-3 rounded-xl bg-emerald-950/20 border border-emerald-500/30 flex items-center justify-between gap-2.5 text-xs animate-in fade-in duration-200">
-                <div className="flex items-center gap-2 min-w-0">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span className="text-emerald-300 font-semibold shrink-0">Активны ваши правила:</span>
-                  <span className="text-slate-300 truncate text-[11px] font-mono">
-                    {formatProfileSummary(businessProfile)}
-                  </span>
+              <div className="mb-4 p-3.5 sm:p-4 rounded-xl bg-[#141b24] border border-slate-800 text-xs shadow-xs animate-in fade-in duration-200">
+                <div className="flex items-center justify-between gap-3 mb-2.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="text-xs sm:text-sm font-medium text-slate-200">
+                      {t('rules.activeTitle')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsProfileModalOpen(true)}
+                    className="text-xs text-slate-400 hover:text-emerald-300 underline underline-offset-2 shrink-0 font-medium transition-colors cursor-pointer"
+                  >
+                    {t('rules.edit')}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsProfileModalOpen(true)}
-                  className="text-[11px] text-emerald-400 hover:text-emerald-300 underline underline-offset-2 shrink-0 font-medium"
-                >
-                  Изменить
-                </button>
+
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                  {businessProfile.role && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-normal text-slate-300 bg-slate-800/80 border border-slate-700/60 break-words">
+                      {t('rules.role', { role: formatRole(businessProfile.role, currentLang) })}
+                    </span>
+                  )}
+                  {businessProfile.maxPenaltyPercent && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-normal text-slate-300 bg-slate-800/80 border border-slate-700/60 break-words">
+                      {t('rules.penaltyUpTo', { pct: businessProfile.maxPenaltyPercent.replace('.', currentLang === 'en' ? '.' : ',') })}
+                    </span>
+                  )}
+                  {businessProfile.maxPaymentDays && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-normal text-slate-300 bg-slate-800/80 border border-slate-700/60 break-words">
+                      {t('rules.paymentUpTo', { days: formatDaysGenitive(businessProfile.maxPaymentDays, currentLang) })}
+                    </span>
+                  )}
+                  {businessProfile.minNoticeDays && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-normal text-slate-300 bg-slate-800/80 border border-slate-700/60 break-words">
+                      {t('rules.noticeFrom', { days: formatDaysGenitive(businessProfile.minNoticeDays, currentLang) })}
+                    </span>
+                  )}
+                  {businessProfile.disputeCity && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-normal text-slate-300 bg-slate-800/80 border border-slate-700/60 break-words">
+                      {t('rules.court', { city: businessProfile.disputeCity })}
+                    </span>
+                  )}
+                  {businessProfile.customRules?.trim() && (
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-normal text-slate-300 bg-slate-800/80 border border-slate-700/60 break-words max-w-full">
+                      {t('rules.custom', { rules: businessProfile.customRules.trim() })}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1608,18 +1793,18 @@ export default function App() {
                         {selectedFile.name.split('.').pop() || 'FILE'}
                       </span>
                       <span className="text-slate-400 font-mono">
-                        {formatFileSize(selectedFile.size)}
+                        {formatFileSize(selectedFile.size, currentLang)}
                       </span>
                       <span className="inline-flex items-center gap-1.5 text-emerald-400 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        Файл готов к обработке
+                        {t('step1.fileReadyBadge')}
                       </span>
                     </div>
                   </div>
 
                   <div className="mt-4 flex items-center gap-3 text-xs">
                     <span className="text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 transition-colors">
-                      Нажмите, чтобы заменить файл
+                      {t('step1.replaceFileBtn')}
                     </span>
                     <span className="text-slate-600">·</span>
                     <button
@@ -1628,13 +1813,14 @@ export default function App() {
                         e.stopPropagation();
                         setSelectedFile(null);
                         setAnalysisResult(null);
+                        setAnalysisLang(null);
                         setFileError(null);
                         setIsStep3Unlocked(false);
                         if (fileInputRef.current) fileInputRef.current.value = '';
                       }}
-                      className="text-slate-400 hover:text-rose-400 transition-colors"
+                      className="text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
                     >
-                      Удалить
+                      {t('step1.removeBtn')}
                     </button>
                   </div>
                 </div>
@@ -1652,17 +1838,17 @@ export default function App() {
 
                   <div className="space-y-2 max-w-sm">
                     <p className="font-bold text-white text-base sm:text-lg">
-                      Перетащите файл договора сюда
+                      {t('step1.dragDropPrompt')}
                     </p>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      или нажмите для выбора на компьютере или смартфоне
+                      {t('step1.clickToBrowse')}
                     </p>
                     <div className="pt-2 flex flex-wrap items-center justify-center gap-1.5 text-[11px] text-slate-500">
                       <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">PDF</span>
                       <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">DOCX</span>
                       <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">TXT</span>
                       <span className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">PNG / JPG</span>
-                      <span className="text-slate-500">до 4 МБ</span>
+                      <span className="text-slate-500">{t('step1.upTo4MB')}</span>
                     </div>
                   </div>
                 </div>
@@ -1673,82 +1859,33 @@ export default function App() {
             {!selectedFile && (
               <div className="mt-5 p-3.5 rounded-xl bg-slate-900/50 border border-slate-800 text-xs text-slate-400 flex items-center justify-center gap-2.5 text-center">
                 <Info className="w-4 h-4 text-emerald-400/80 shrink-0" />
-                <span>Загрузите договор — после загрузки появятся кнопки выбора: экспресс-проверка ИИ или прямая фиксация в Solana.</span>
+                <span>{t('step1.hintBeforeUpload')}</span>
               </div>
             )}
 
-            {/* Action Buttons for Step 1: beautifully animate in once file is loaded */}
+            {/* Action Buttons for Step 1: animate in once file is loaded */}
             {selectedFile && (
-              <div className="mt-6 pt-5 border-t border-slate-800/80 space-y-3.5 animate-in fade-in slide-in-from-bottom-5 duration-500 ease-out fill-mode-both">
-                <div className="flex items-center justify-between text-xs px-1">
-                  <span className="font-semibold text-slate-300 flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
-                    <span>Выберите дальнейшее действие:</span>
-                  </span>
-                  <span className="text-[11px] text-emerald-400/80 font-medium hidden sm:inline">
-                    Документ готов к обработке
-                  </span>
-                </div>
+              <div className="mt-6 pt-5 border-t border-slate-800/80 space-y-3 animate-in fade-in slide-in-from-bottom-5 duration-500 ease-out fill-mode-both max-w-md mx-auto">
+                {/* Main Action Button: Проверить на ловушки */}
+                <button
+                  type="button"
+                  onClick={() => startTrapCheck()}
+                  disabled={isAnyRequestInFlight}
+                  className="w-full relative group overflow-hidden py-3.5 px-6 rounded-xl font-bold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] disabled:opacity-75 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <ShieldAlert className="w-5 h-5 text-slate-950" />
+                  <span>{t('step1.checkTrapsBtn')}</span>
+                </button>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  {/* Button 1: Check traps (AI Analysis) */}
-                  <button
-                    type="button"
-                    onClick={() => startTrapCheck()}
-                    disabled={isAnyRequestInFlight}
-                    className="group relative p-4 sm:p-5 rounded-2xl bg-gradient-to-b from-emerald-500/20 via-emerald-950/25 to-slate-950 border-2 border-emerald-500/50 hover:border-emerald-400 text-left transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] shadow-[0_0_25px_rgba(16,185,129,0.18)] hover:shadow-[0_0_35px_rgba(16,185,129,0.35)] disabled:opacity-75 disabled:cursor-not-allowed flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-400 text-slate-950 flex items-center justify-center font-bold shadow-md group-hover:scale-105 transition-transform">
-                          <ShieldAlert className="w-5 h-5 text-slate-950" />
-                        </div>
-                        <span className="text-[11px] font-semibold text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                          Рекомендуется
-                        </span>
-                      </div>
-                      <div className="font-bold text-white text-sm sm:text-base group-hover:text-emerald-300 transition-colors flex items-center gap-1.5">
-                        <span>Проверить на ловушки</span>
-                        <ArrowRight className="w-4 h-4 text-emerald-400 transition-transform group-hover:translate-x-1" />
-                      </div>
-                      <p className="text-xs text-slate-300/85 mt-1.5 leading-relaxed">
-                        ИИ просканирует договор за 5 секунд, выявит скрытые риски, кабальные штрафы и неравные условия.
-                      </p>
-                    </div>
-                    <div className="mt-3.5 pt-2.5 border-t border-emerald-500/20 flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
-                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                      <span>Экспресс-анализ ИИ · Бесплатно</span>
-                    </div>
-                  </button>
-
-                  {/* Button 2: Direct to Stamping */}
+                {/* Subtext link: Пропустить проверку и перейти к фиксации */}
+                <div className="text-center pt-0.5">
                   <button
                     type="button"
                     onClick={handleDirectToStamping}
                     disabled={isAnyRequestInFlight}
-                    className="group relative p-4 sm:p-5 rounded-2xl bg-[#0e141a] hover:bg-slate-900 border-2 border-slate-700/80 hover:border-emerald-500/50 text-left transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] shadow-lg disabled:opacity-75 disabled:cursor-not-allowed flex flex-col justify-between"
+                    className="text-xs text-slate-400 hover:text-emerald-300 transition-colors underline underline-offset-4 hover:no-underline cursor-pointer bg-transparent border-0 p-1"
                   >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div className="w-10 h-10 rounded-xl bg-slate-800 text-emerald-400 border border-slate-700 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
-                          <Lock className="w-5 h-5" />
-                        </div>
-                        <span className="text-[11px] font-medium text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700">
-                          Без проверки
-                        </span>
-                      </div>
-                      <div className="font-bold text-white text-sm sm:text-base group-hover:text-emerald-300 transition-colors flex items-center gap-1.5">
-                        <span>Перейти к фиксации напрямую</span>
-                        <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-400 transition-transform group-hover:translate-x-1" />
-                      </div>
-                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
-                        Сразу перейти к шагу 3 и сохранить неизменяемый SHA-256 отпечаток договора в реестре Solana devnet.
-                      </p>
-                    </div>
-                    <div className="mt-3.5 pt-2.5 border-t border-slate-800 flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
-                      <Database className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span>Прямая запись в блокчейн Solana</span>
-                    </div>
+                    {t('step1.skipAuditBtn')}
                   </button>
                 </div>
               </div>
@@ -1774,25 +1911,25 @@ export default function App() {
 
                 <div className="space-y-2">
                   <h3 className="text-xl font-bold text-white tracking-tight">
-                    Анализируем договор…
+                    {t('step2.analyzingTitle')}
                   </h3>
                   <p className="text-sm text-slate-400 max-w-sm mx-auto">
-                    ИИ читает документ и ищет невыгодные условия, неравные штрафы, автопродление и скрытые платежи.
+                    {t('step2.analyzingDesc')}
                   </p>
                 </div>
 
                 <div className="max-w-xs mx-auto space-y-2 text-left text-xs text-slate-400">
                   <div className="flex items-center gap-2">
                     <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Чтение пунктов и условий договора</span>
+                    <span>{t('step2.analyzingStep1')}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="w-3.5 h-3.5 border-2 border-emerald-400/40 border-t-emerald-400 rounded-full animate-spin" />
-                    <span className="text-slate-200">Поиск юридических и финансовых ловушек</span>
+                    <span className="text-slate-200">{t('step2.analyzingStep2')}</span>
                   </div>
                   <div className="flex items-center gap-2 text-slate-500">
                     <Clock className="w-3.5 h-3.5" />
-                    <span>Формирование простых объяснений и рекомендаций</span>
+                    <span>{t('step2.analyzingStep3')}</span>
                   </div>
                 </div>
               </div>
@@ -1811,25 +1948,25 @@ export default function App() {
 
                 <div className="space-y-2">
                   <h3 className="text-xl font-bold text-white tracking-tight">
-                    Сверяем согласованную редакцию договора…
+                    {t('step2.recheckingTitle')}
                   </h3>
                   <p className="text-sm text-slate-400 max-w-sm mx-auto">
-                    ИИ проверяет, какие условия контрагент исправил, а какие остались без изменений.
+                    {t('step2.recheckingDesc')}
                   </p>
                 </div>
 
                 <div className="max-w-xs mx-auto space-y-2 text-left text-xs text-slate-400">
                   <div className="flex items-center gap-2">
                     <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Сравнение со списком ранее найденных ловушек</span>
+                    <span>{t('step2.recheckingStep1')}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="w-3.5 h-3.5 border-2 border-emerald-400/40 border-t-emerald-400 rounded-full animate-spin" />
-                    <span className="text-slate-200">Фиксация устранённых и изменённых пунктов</span>
+                    <span className="text-slate-200">{t('step2.recheckingStep2')}</span>
                   </div>
                   <div className="flex items-center gap-2 text-slate-500">
                     <Clock className="w-3.5 h-3.5" />
-                    <span>Формирование экспресс-отчёта по прогрессу</span>
+                    <span>{t('step2.recheckingStep3')}</span>
                   </div>
                 </div>
               </div>
@@ -1843,10 +1980,10 @@ export default function App() {
                 </div>
                 <div className="space-y-2 max-w-md mx-auto">
                   <h3 className="text-lg font-bold text-white">
-                    Не удалось завершить анализ
+                    {t('step2.analysisFailedTitle')}
                   </h3>
                   <p className="text-xs sm:text-sm text-rose-200/90 leading-relaxed">
-                    {analysisError}
+                    {getLocalizedErrorMessage(analysisError, currentLang)}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
@@ -1854,17 +1991,17 @@ export default function App() {
                     type="button"
                     onClick={() => startTrapCheck()}
                     disabled={isAnyRequestInFlight}
-                    className="px-6 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 shadow-sm disabled:opacity-75 disabled:cursor-not-allowed"
+                    className="px-6 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center gap-2 shadow-sm disabled:opacity-75 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <RefreshCw className="w-4 h-4" />
-                    <span>Повторить</span>
+                    <span>{t('step2.retryBtn')}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setCurrentStep(1)}
-                    className="px-5 py-2.5 rounded-xl text-xs sm:text-sm bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+                    className="px-5 py-2.5 rounded-xl text-xs sm:text-sm bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors cursor-pointer"
                   >
-                    Выбрать другой файл
+                    {t('step2.selectAnotherBtn')}
                   </button>
                 </div>
               </div>
@@ -1878,20 +2015,20 @@ export default function App() {
                 </div>
                 <div className="space-y-2 max-w-md mx-auto">
                   <h3 className="text-lg sm:text-xl font-bold text-white">
-                    {selectedFile ? 'Документ готов к проверке на ловушки' : 'Договор пока не загружен'}
+                    {selectedFile ? t('step2.readyToCheckTitle') : t('step2.noFileLoadedTitle')}
                   </h3>
                   {selectedFile ? (
                     <div className="space-y-1">
                       <p className="text-xs sm:text-sm text-slate-300">
-                        Вложен документ: <span className="text-emerald-300 font-semibold break-all">{selectedFile.name}</span> ({formatFileSize(selectedFile.size)})
+                        {t('step2.attachedDoc')} <span className="text-emerald-300 font-semibold break-all">{selectedFile.name}</span> ({formatFileSize(selectedFile.size, currentLang)})
                       </p>
                       <p className="text-xs text-slate-400">
-                        Анализ запускается только по вашей команде. Нажмите кнопку ниже, чтобы начать проверку.
+                        {t('step2.analysisOnCommand')}
                       </p>
                     </div>
                   ) : (
                     <p className="text-xs text-slate-400">
-                      Сначала выберите файл договора на Шаге 1.
+                      {t('step2.selectFileFirstNotice')}
                     </p>
                   )}
                 </div>
@@ -1906,7 +2043,7 @@ export default function App() {
                         className="w-full sm:w-auto px-6 py-3 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)] disabled:opacity-75 cursor-pointer"
                       >
                         <ShieldAlert className="w-4 h-4 text-slate-950" />
-                        <span>Проверить на ловушки</span>
+                        <span>{t('step1.checkTrapsBtn')}</span>
                       </button>
                       <button
                         type="button"
@@ -1917,7 +2054,7 @@ export default function App() {
                         className="w-full sm:w-auto px-5 py-3 rounded-xl text-xs sm:text-sm bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:text-white transition-colors flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <Lock className="w-4 h-4 text-slate-400" />
-                        <span>Перейти сразу к фиксации</span>
+                        <span>{t('step2.goToStampingDirectly')}</span>
                       </button>
                     </>
                   ) : (
@@ -1927,7 +2064,7 @@ export default function App() {
                       className="px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 transition-all inline-flex items-center gap-2 cursor-pointer"
                     >
                       <Upload className="w-4 h-4" />
-                      <span>Перейти к загрузке</span>
+                      <span>{t('step2.goToUploadBtn')}</span>
                     </button>
                   )}
                 </div>
@@ -1937,6 +2074,38 @@ export default function App() {
             {/* SUCCESS REAL RESULT FROM GEMINI */}
             {!isAnalyzing && !isRechecking && analysisResult && (
               <>
+                {/* Translate results banner on language mismatch */}
+                {analysisResult && analysisLang && analysisLang !== currentLang && !isAnalyzing && !isRechecking && (
+                  <div className="bg-[#0f141a] border border-emerald-500/40 rounded-2xl p-4 sm:p-5 shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-200">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <p className="text-xs sm:text-sm text-slate-200">
+                        {t('step2.translateResultsHint')}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleTranslateResults}
+                      disabled={isAnyRequestInFlight}
+                      className="w-full sm:w-auto px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition-all flex items-center justify-center gap-1.5 shadow-sm shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      {isTranslatingResults ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                          <span>{t('step2.translatingResultsBtn')}</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>{t('step2.translateResultsBtn')}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
                 {/* 0. Результат повторной экспресс-проверки (Устранено X из N) */}
                 {analysisResult.recheckData && (
                   <div className="bg-[#0f141a] border border-emerald-500/40 rounded-2xl p-6 sm:p-7 shadow-xl space-y-5 animate-in fade-in duration-300">
@@ -1947,10 +2116,10 @@ export default function App() {
                         </div>
                         <div>
                           <h3 className="text-base sm:text-lg font-bold text-white">
-                            Результат повторной проверки согласованной версии
+                            {t('step2.recheckHeaderTitle')}
                           </h3>
                           <p className="text-xs text-slate-400">
-                            Сравнение со списком ранее найденных условий
+                            {t('step2.recheckComparisonDesc')}
                           </p>
                         </div>
                       </div>
@@ -1958,7 +2127,7 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs sm:text-sm bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                          <span>Устранено {analysisResult.recheckData.прогресс.устранено} из {analysisResult.recheckData.прогресс.всего}</span>
+                          <span>{t('step2.resolvedProgressBadge', { resolved: analysisResult.recheckData.прогресс.устранено, total: analysisResult.recheckData.прогресс.всего })}</span>
                         </span>
                       </div>
                     </div>
@@ -1966,7 +2135,7 @@ export default function App() {
                     {/* Прогресс-бар */}
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-xs text-slate-400">
-                        <span>Прогресс устранения замечаний</span>
+                        <span>{t('step2.progressLabel')}</span>
                         <span className="font-semibold text-emerald-400">{analysisResult.recheckData.прогресс.процент}%</span>
                       </div>
                       <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
@@ -1981,12 +2150,13 @@ export default function App() {
                     {analysisResult.recheckData.сравнение && analysisResult.recheckData.сравнение.length > 0 && (
                       <div className="space-y-2.5 pt-1">
                         <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                          Статус ранее найденных условий:
+                          {t('step2.clauseStatusHeader')}
                         </div>
                         <div className="space-y-2">
                           {analysisResult.recheckData.сравнение.map((item, idx) => {
-                            const isResolved = item.статус === 'устранена';
-                            const isChanged = item.статус === 'изменена';
+                            const statusLower = (item.статус || '').toLowerCase();
+                            const isResolved = statusLower === 'устранена' || statusLower === 'resolved';
+                            const isChanged = statusLower === 'изменена' || statusLower === 'изменено' || statusLower === 'changed' || statusLower === 'modified';
                             return (
                               <div
                                 key={idx}
@@ -2001,9 +2171,9 @@ export default function App() {
                                 <div className="space-y-1">
                                   <div className="flex items-center gap-2">
                                     <span className="font-mono font-semibold px-2 py-0.5 rounded bg-slate-900/80 text-white border border-slate-700/60">
-                                      {item.пункт || `№${idx + 1}`}
+                                      {item.пункт || `${t('step2.clausePrefix')} #${idx + 1}`}
                                     </span>
-                                    <span className="font-medium text-white">{item.суть || 'Условие договора'}</span>
+                                    <span className="font-medium text-white">{item.суть || t('step2.defaultClauseTitle')}</span>
                                   </div>
                                   {item.почему && (
                                     <div className="text-[11px] text-slate-300/90 pl-1">
@@ -2016,17 +2186,17 @@ export default function App() {
                                   {isResolved ? (
                                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                      <span>Устранена</span>
+                                      <span>{t('step2.statusResolved')}</span>
                                     </span>
                                   ) : isChanged ? (
                                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                                       <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                                      <span>Изменена</span>
+                                      <span>{t('step2.statusChanged')}</span>
                                     </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
                                       <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
-                                      <span>Осталась</span>
+                                      <span>{t('step2.statusRemains')}</span>
                                     </span>
                                   )}
                                 </div>
@@ -2051,34 +2221,34 @@ export default function App() {
                       </div>
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2 mb-1">
-                          <span className="text-xs text-slate-400">Проверенный документ:</span>
+                          <span className="text-xs text-slate-400">{t('step2.verifiedDocLabel')}</span>
                           {/* Индикатор активной версии */}
                           {isAgreedVersion ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                              <span>Согласованная версия v2 {replacementSource === 'manual' ? '(заменена вручную)' : '(проверена повторно)'}</span>
+                              <span>{t('step2.agreedVersionV2')} {replacementSource === 'manual' ? t('step2.manualReplacementBadge') : t('step2.recheckedReplacementBadge')}</span>
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">
                               <FileText className="w-3.5 h-3.5 text-slate-400" />
-                              <span>Исходный черновик {analysisResult.ловушки.length > 0 ? '(найдены риски)' : '(чисто)'}</span>
+                              <span>{t('step2.originalDraftBadge')} {analysisResult.ловушки.length > 0 ? t('step2.risksFoundBadge') : t('step2.cleanDraftBadge')}</span>
                             </span>
                           )}
 
                           {/* Подпись при заполненном профиле правил */}
                           {isProfileFilled && !pendingRecheck && (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                              <span>Проверено по вашим правилам</span>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span>{t('step2.auditedByYourRulesBadge')}</span>
                             </span>
                           )}
                         </div>
 
                         <div className="font-semibold text-white text-sm sm:text-base break-all flex items-center gap-2">
-                          <span>{selectedFile ? selectedFile.name : 'Договор'}</span>
+                          <span>{selectedFile ? selectedFile.name : t('step2.contractLabel')}</span>
                           {selectedFile && (
                             <span className="text-xs text-slate-400 font-normal shrink-0">
-                              ({formatFileSize(selectedFile.size)})
+                              ({formatFileSize(selectedFile.size, currentLang)})
                             </span>
                           )}
                         </div>
@@ -2088,7 +2258,7 @@ export default function App() {
                           <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1.5">
                             <RefreshCw className="w-3 h-3 text-emerald-400 shrink-0" />
                             <span>
-                              Заменил исходный черновик с рисками: <span className="text-slate-300 font-medium">{originalFileName}</span>
+                              {t('step2.replacedDraftPrefix')} <span className="text-slate-300 font-medium">{originalFileName}</span>
                             </span>
                           </div>
                         )}
@@ -2097,20 +2267,20 @@ export default function App() {
 
                     {/* Risk Badge: Red for high, Yellow for medium, Green for low */}
                     <div>
-                      {analysisResult.общий_уровень_риска === 'высокий' ? (
+                      {analysisResult.общий_уровень_риска === 'высокий' || analysisResult.общий_уровень_риска === 'high' ? (
                         <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/25">
                           <AlertCircle className="w-4 h-4" />
-                          <span>Уровень риска: Высокий</span>
+                          <span>{t('step2.highRiskBadge', undefined, currentLang)}</span>
                         </div>
-                      ) : analysisResult.общий_уровень_риска === 'средний' ? (
+                      ) : analysisResult.общий_уровень_риска === 'средний' || analysisResult.общий_уровень_риска === 'medium' ? (
                         <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500/10 text-amber-300 border border-amber-500/25">
                           <AlertTriangle className="w-4 h-4" />
-                          <span>Уровень риска: Средний</span>
+                          <span>{t('step2.mediumRiskBadge', undefined, currentLang)}</span>
                         </div>
                       ) : (
                         <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
                           <CheckCircle2 className="w-4 h-4" />
-                          <span>Уровень риска: Низкий</span>
+                          <span>{t('step2.lowRiskBadge', undefined, currentLang)}</span>
                         </div>
                       )}
                     </div>
@@ -2118,13 +2288,13 @@ export default function App() {
 
                   <div className="pt-2 pb-3">
                     <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                      {formatTrapsHeadline(analysisResult.ловушки.length)}
+                      {formatTrapsHeadline(analysisResult.ловушки.length, currentLang)}
                     </h2>
                     {(analysisResult.тип_договора || (analysisResult.стороны && analysisResult.стороны.length > 0)) && (
                       <p className="text-xs text-slate-400 mt-1">
-                        {analysisResult.тип_договора && <span className="text-slate-300 font-medium">Тип: {analysisResult.тип_договора}</span>}
+                        {analysisResult.тип_договора && <span className="text-slate-300 font-medium">{t('step2.contractTypeLabel')} {analysisResult.тип_договора}</span>}
                         {analysisResult.стороны && analysisResult.стороны.length > 0 && (
-                          <span className="ml-2">· Стороны: {analysisResult.стороны.join(' и ')}</span>
+                          <span className="ml-2">· {t('step2.partiesLabel')} {analysisResult.стороны.join(t('step2.partiesSeparator'))}</span>
                         )}
                       </p>
                     )}
@@ -2133,7 +2303,7 @@ export default function App() {
                   <div className="pt-3 border-t border-slate-800/80 flex items-start gap-2 text-xs text-slate-400">
                     <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
                     <p className="leading-relaxed">
-                      Предварительная проверка, не юридическая консультация. Выявленные пункты рекомендуется обсудить с контрагентом или юристом.
+                      {t('step2.disclaimer')}
                     </p>
                   </div>
                 </div>
@@ -2148,13 +2318,13 @@ export default function App() {
                         </div>
                         <div>
                           <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-                            <span>Нарушения ваших правил</span>
+                            <span>{t('step2.violationsTitle')}</span>
                             <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
                               {analysisResult.нарушения_правил.length}
                             </span>
                           </h3>
                           <p className="text-xs text-rose-200/80">
-                            Условия в договоре, противоречащие заданным критериям вашего бизнеса
+                            {t('step2.violationsDesc')}
                           </p>
                         </div>
                       </div>
@@ -2162,10 +2332,10 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setIsProfileModalOpen(true)}
-                        className="px-3 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5"
+                        className="px-3 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
                       >
                         <Settings className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Изменить правила</span>
+                        <span>{t('step2.editRulesBtn')}</span>
                       </button>
                     </div>
 
@@ -2177,20 +2347,20 @@ export default function App() {
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="font-mono font-semibold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                              {violation.пункт || `Пункт №${idx + 1}`}
+                              {violation.пункт || `${t('step2.clausePrefix')} #${idx + 1}`}
                             </span>
                             <span className="text-rose-400 text-[11px] font-medium">
-                              Несоответствие критерию
+                              {t('step2.criteriaMismatch')}
                             </span>
                           </div>
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
                             <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800">
-                              <div className="text-[11px] text-slate-400 mb-0.5">Ваше правило:</div>
+                              <div className="text-[11px] text-slate-400 mb-0.5">{t('step2.yourRuleLabel')}</div>
                               <div className="text-emerald-300 font-medium">{violation.правило}</div>
                             </div>
                             <div className="p-2.5 rounded-lg bg-rose-950/20 border border-rose-500/20">
-                              <div className="text-[11px] text-rose-300/80 mb-0.5">Что в договоре:</div>
+                              <div className="text-[11px] text-rose-300/80 mb-0.5">{t('step2.inContractLabel')}</div>
                               <div className="text-rose-200 font-medium">{violation.что_в_договоре}</div>
                             </div>
                           </div>
@@ -2206,10 +2376,10 @@ export default function App() {
                   <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                     <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider">
                       <Calculator className="w-4 h-4 text-emerald-400" />
-                      <span>Расчёты в тенге (по условиям договора)</span>
+                      <span>{t('step2.calculationsTitle')}</span>
                     </div>
                     <span className="text-[11px] text-slate-500">
-                      Раздельные сценарии с допущениями
+                      {t('step2.separateScenariosLabel')}
                     </span>
                   </div>
 
@@ -2218,43 +2388,52 @@ export default function App() {
                     <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2 flex flex-col justify-between">
                       <div>
                         <div className="font-semibold text-white text-xs mb-1">
-                          Сценарий 1: Неустойка (пеня) при задержке оплаты
+                          {t('step2.scenario1Title')}
                         </div>
                         <div className="text-[11px] text-slate-400 mb-2">
-                          Допущение: просрочка оплаты на {customPenaltyDays} дней
+                          {t('step2.scenario1Assumption', { days: customPenaltyDays })}
                         </div>
 
-                        {hasPenaltyParams && calculatedPenalty != null ? (
-                          <div className="space-y-1">
+                        {hasPenaltyParams && calculatedPenalty != null && (
+                          <div className="space-y-1.5 mb-2.5">
                             <div className="font-mono text-emerald-300 text-xs sm:text-sm font-semibold bg-[#090d10] p-2 rounded-lg border border-slate-800 break-words">
-                              {currentPenaltyRate}% × {formatTenge(currentPayment!)} × {customPenaltyDays} дн. = {formatTenge(calculatedPenalty)}
+                              {currentPenaltyRate}% × {formatTenge(currentPayment!)} × {customPenaltyDays} {t('step2.scenario1FormulaDays')} = {formatTenge(calculatedPenalty)}
                             </div>
-                            <div className="text-[11px] text-rose-300">
-                              Потенциальная пеня: {formatTenge(calculatedPenalty)}
+                            <div className="text-[11px] text-rose-300 font-medium">
+                              {t('step2.potentialPenalty')} {formatTenge(calculatedPenalty)}
                             </div>
                           </div>
-                        ) : (
-                          <div className="space-y-2">
-                            <div className="text-amber-300 text-[11px] bg-amber-950/20 p-2 rounded-lg border border-amber-500/20">
-                              Не удалось определить: в договоре не найден точный ежемесячный платёж или дневной процент пени.
+                        )}
+
+                        {(!numbers?.ежемесячный_платёж || !numbers?.процент_штрафа_в_день) && (
+                          <div className="space-y-2 pt-1">
+                            <div className="text-[11px] text-slate-400">
+                              {t('step2.notFoundSpecifyManually')}
                             </div>
-                            <div className="space-y-1.5 pt-1">
-                              <span className="text-[11px] text-slate-400">Введите значения для расчёта:</span>
-                              <div className="flex gap-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <label className="block text-[11px] text-slate-300 font-medium">
+                                  {t('step2.monthlyPaymentInput')}
+                                </label>
                                 <input
                                   type="number"
-                                  placeholder="Платёж, ₸"
+                                  placeholder="500000"
                                   value={customMonthlyPayment}
                                   onChange={(e) => setCustomMonthlyPayment(e.target.value)}
-                                  className="w-1/2 p-1.5 rounded-lg bg-[#080c0f] border border-slate-700 text-white text-xs font-mono"
+                                  className="w-full p-2 rounded-lg bg-[#080c0f] border border-slate-700 focus:border-emerald-500/60 focus:outline-none text-white text-xs font-mono transition-colors"
                                 />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="block text-[11px] text-slate-300 font-medium">
+                                  {t('step2.penaltyPerDayInput')}
+                                </label>
                                 <input
                                   type="number"
                                   step="0.01"
-                                  placeholder="% в день"
+                                  placeholder="0.1"
                                   value={customPenaltyPercent}
                                   onChange={(e) => setCustomPenaltyPercent(e.target.value)}
-                                  className="w-1/2 p-1.5 rounded-lg bg-[#080c0f] border border-slate-700 text-white text-xs font-mono"
+                                  className="w-full p-2 rounded-lg bg-[#080c0f] border border-slate-700 focus:border-emerald-500/60 focus:outline-none text-white text-xs font-mono transition-colors"
                                 />
                               </div>
                             </div>
@@ -2267,24 +2446,24 @@ export default function App() {
                     <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2 flex flex-col justify-between">
                       <div>
                         <div className="font-semibold text-white text-xs mb-1">
-                          Сценарий 2: Обеспечительный платёж (залог)
+                          {t('step2.scenario2Title')}
                         </div>
                         <div className="text-[11px] text-slate-400 mb-2">
-                          Допущение: риск невозврата при досрочном прекращении
+                          {t('step2.scenario2Assumption')}
                         </div>
 
                         {currentDeposit != null ? (
                           <div className="space-y-1">
                             <div className="font-mono text-emerald-300 text-xs sm:text-sm font-semibold bg-[#090d10] p-2 rounded-lg border border-slate-800">
-                              Залог = {formatTenge(currentDeposit)}
+                              {t('step2.depositLabel')} = {formatTenge(currentDeposit)}
                             </div>
                             <div className="text-[11px] text-slate-300">
-                              Сумма обеспечительного платежа, замораживаемая по договору
+                              {t('step2.depositFrozenDesc')}
                             </div>
                           </div>
                         ) : (
                           <div className="text-slate-400 text-[11px] bg-[#090d10] p-2 rounded-lg border border-slate-800">
-                            Сумма залога в договоре не зафиксирована (null)
+                            {t('step2.depositNullDesc')}
                           </div>
                         )}
                       </div>
@@ -2293,19 +2472,19 @@ export default function App() {
                     {/* Сценарий 3: Обязательства за весь срок */}
                     <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2 sm:col-span-2">
                       <div className="font-semibold text-white text-xs mb-1">
-                        Сценарий 3: Базовые обязательства за весь срок действия договора
+                        {t('step2.scenario3Title')}
                       </div>
                       <div className="text-[11px] text-slate-400 mb-2">
-                        Допущение: оплата базовой ставки за полный срок без индексаций
+                        {t('step2.scenario3Assumption')}
                       </div>
 
                       {hasObligationParams && calculatedObligation != null ? (
                         <div className="font-mono text-emerald-300 text-xs sm:text-sm font-semibold bg-[#090d10] p-2.5 rounded-lg border border-slate-800">
-                          {currentMonths} мес. × {formatTenge(currentPayment!)} = {formatTenge(calculatedObligation)}
+                          {currentMonths} {t('step2.scenario3Months')} × {formatTenge(currentPayment!)} = {formatTenge(calculatedObligation)}
                         </div>
                       ) : (
                         <div className="text-slate-400 text-[11px] bg-[#090d10] p-2 rounded-lg border border-slate-800">
-                          Не удалось определить полный объём: {currentMonths == null ? 'срок договора не указан в месяцах' : 'не зафиксирована ежемесячная ставка'}.
+                          {currentMonths == null ? t('step2.scenario3NotDeterminedWithReasons', { reason: t('step2.scenario3NoMonths') }) : t('step2.scenario3NotDeterminedWithReasons', { reason: t('step2.scenario3NoPayment') })}
                         </div>
                       )}
                     </div>
@@ -2316,36 +2495,40 @@ export default function App() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between px-1">
                     <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
-                      Список выявленных условий ({analysisResult.ловушки.length})
+                      {t('step2.trapsListHeader', { count: analysisResult.ловушки.length })}
                     </h3>
                     {analysisResult.ловушки.length > 0 && (
                       <button
                         type="button"
                         onClick={toggleAllTraps}
-                        className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+                        className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
                       >
                         {Object.keys(expandedTraps).length === analysisResult.ловушки.length 
-                          ? 'Свернуть все' 
-                          : 'Развернуть все'}
+                          ? t('step2.collapseAll') 
+                          : t('step2.expandAll')}
                       </button>
                     )}
                   </div>
 
                   {analysisResult.ловушки.length === 0 ? (
                     <div className="p-6 rounded-xl bg-[#0f141a] border border-slate-800 text-center text-xs text-slate-400">
-                      Критических условий и скрытых ловушек в тексте договора не обнаружено.
+                      {t('step2.noTrapsDetected')}
                     </div>
                   ) : (
                     <div className="space-y-3">
                       {analysisResult.ловушки.map((trap: TrapItem, index: number) => {
                         const isOpen = !!expandedTraps[index];
-                        const isHigh = trap.уровень === 'высокий';
+                        const isHigh = trap.уровень === 'высокий' || trap.уровень === 'high';
 
                         // Check if this trap can show an exact formula in tenge
                         const isPenaltyTrap = trap.чем_опасно?.toLowerCase().includes('пен') || 
                                               trap.чем_опасно?.toLowerCase().includes('штраф') ||
+                                              trap.чем_опасно?.toLowerCase().includes('penalt') ||
+                                              trap.чем_опасно?.toLowerCase().includes('fine') ||
                                               trap.цитата?.toLowerCase().includes('пен') ||
-                                              trap.цитата?.toLowerCase().includes('штраф');
+                                              trap.цитата?.toLowerCase().includes('штраф') ||
+                                              trap.цитата?.toLowerCase().includes('penalt') ||
+                                              trap.цитата?.toLowerCase().includes('fine');
 
                         return (
                           <div
@@ -2355,26 +2538,26 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => toggleTrap(index)}
-                              className="w-full text-left p-4 sm:p-5 flex items-start justify-between gap-3 focus:outline-none"
+                              className="w-full text-left p-4 sm:p-5 flex items-start justify-between gap-3 focus:outline-none cursor-pointer"
                             >
                               <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-1">
                                 <div className="flex items-center gap-2">
                                   <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                                    {trap.пункт || `№${index + 1}`}
+                                    {trap.пункт || `${t('step2.clausePrefix')} #${index + 1}`}
                                   </span>
                                   <span className="font-bold text-white text-sm sm:text-base">
-                                    {trap.чем_опасно ? trap.чем_опасно.slice(0, 70) + (trap.чем_опасно.length > 70 ? '…' : '') : 'Условие договора'}
+                                    {trap.чем_опасно ? trap.чем_опасно.slice(0, 70) + (trap.чем_опасно.length > 70 ? '…' : '') : t('step2.defaultClauseTitle')}
                                   </span>
                                 </div>
 
                                 <div>
                                   {isHigh ? (
                                     <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/25">
-                                      Высокий
+                                      {t('step2.trapRiskHigh', undefined, currentLang)}
                                     </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/25">
-                                      Средний
+                                      {t('step2.trapRiskMedium', undefined, currentLang)}
                                     </span>
                                   )}
                                 </div>
@@ -2394,7 +2577,7 @@ export default function App() {
                                 {trap.цитата && (
                                   <div>
                                     <div className="text-slate-400 text-xs uppercase font-medium mb-1">
-                                      Цитата из договора:
+                                      {t('step2.quoteFromContract')}
                                     </div>
                                     <div className="p-3 rounded-lg bg-slate-900 border-l-2 border-slate-600 text-slate-300 italic text-xs leading-relaxed font-sans">
                                       «{trap.цитата}»
@@ -2404,7 +2587,7 @@ export default function App() {
 
                                 <div>
                                   <div className="text-slate-400 text-xs uppercase font-medium mb-1">
-                                    Чем это опасно простыми словами:
+                                    {t('step2.whyDangerousTitle')}
                                   </div>
                                   <p className="text-slate-200 leading-relaxed">
                                     {trap.чем_опасно}
@@ -2417,10 +2600,10 @@ export default function App() {
                                     <Coins className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                                     <div>
                                       <div className="font-semibold text-white text-xs sm:text-sm font-mono">
-                                        Формула: {currentPenaltyRate}% × {formatTenge(currentPayment!)} × 30 дней = {formatTenge((currentPenaltyRate! / 100) * currentPayment! * 30)}
+                                        {t('step2.formulaTitle')} {currentPenaltyRate}% × {formatTenge(currentPayment!)} × 30 {t('step2.scenario1FormulaDays')} = {formatTenge((currentPenaltyRate! / 100) * currentPayment! * 30)}
                                       </div>
                                       <div className="text-xs text-slate-400 mt-0.5">
-                                        Расчёт пени кодом сайта при задержке платежа на 30 календарных дней
+                                        {t('step2.penaltyFormulaDesc')}
                                       </div>
                                     </div>
                                   </div>
@@ -2430,7 +2613,7 @@ export default function App() {
                                   <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/20">
                                     <div className="text-emerald-400 text-xs uppercase font-semibold mb-1 flex items-center gap-1.5">
                                       <Check className="w-3.5 h-3.5" />
-                                      <span>Что попросить исправить:</span>
+                                      <span>{t('step2.whatToAskTitle')}</span>
                                     </div>
                                     <p className="text-emerald-200/90 text-xs leading-relaxed">
                                       {trap.что_просить}
@@ -2450,27 +2633,27 @@ export default function App() {
                 <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="space-y-1">
                     <h3 className="font-bold text-white text-base">
-                      Хотите предложить исправления контрагенту?
+                      {t('step2.letterBannerTitle')}
                     </h3>
                     <p className="text-xs text-slate-400">
-                      ИИ подготовит вежливое деловое письмо с 3–5 ключевыми просьбами и компромиссным вариантом.
+                      {t('step2.letterBannerDesc')}
                     </p>
                   </div>
                   <button
                     type="button"
                     onClick={handleGenerateLetter}
                     disabled={isAnyRequestInFlight}
-                    className="shrink-0 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all active:scale-[0.99] disabled:opacity-75 disabled:cursor-not-allowed"
+                    className="shrink-0 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all active:scale-[0.99] disabled:opacity-75 disabled:cursor-not-allowed cursor-pointer"
                   >
                     {isGeneratingLetter ? (
                       <>
                         <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-                        <span>Готовим письмо контрагенту…</span>
+                        <span>{t('step2.generatingLetterBtn')}</span>
                       </>
                     ) : (
                       <>
                         <Send className="w-4 h-4 text-emerald-400" />
-                        <span>Подготовить письмо контрагенту</span>
+                        <span>{t('step2.generateLetterBtn')}</span>
                       </>
                     )}
                   </button>
@@ -2478,13 +2661,13 @@ export default function App() {
 
                 {letterError && (
                   <div className="p-3 rounded-xl bg-rose-950/20 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
-                    <span>{letterError}</span>
+                    <span>{getLocalizedErrorMessage(letterError, currentLang)}</span>
                     <button
                       type="button"
                       onClick={handleGenerateLetter}
-                      className="underline text-rose-200 font-semibold"
+                      className="underline text-rose-200 font-semibold cursor-pointer"
                     >
-                      Повторить
+                      {t('step2.retryBtn', undefined, currentLang)}
                     </button>
                   </div>
                 )}
@@ -2494,7 +2677,7 @@ export default function App() {
                   <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl">
                     <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider mb-4">
                       <CalendarDays className="w-4 h-4 text-emerald-400" />
-                      <span>Важные сроки</span>
+                      <span>{t('step2.importantDatesTitle')}</span>
                     </div>
 
                     <div className="space-y-3">
@@ -2522,10 +2705,10 @@ export default function App() {
                   <div className="bg-[#0f141a] border border-slate-800 rounded-2xl p-6 shadow-xl">
                     <div className="flex items-center gap-2 text-xs uppercase font-semibold text-slate-400 tracking-wider mb-3">
                       <HelpCircle className="w-4 h-4 text-emerald-400" />
-                      <span>Вопросы юристу ({analysisResult.вопросы_юристу.length})</span>
+                      <span>{t('step2.lawyerQuestionsTitle', { count: analysisResult.вопросы_юристу.length })}</span>
                     </div>
                     <p className="text-xs text-slate-400 mb-4">
-                      Если вы решите проконсультироваться с юристом перед подписанием, задайте ему эти точечные вопросы по договору:
+                      {t('step2.lawyerQuestionsIntro')}
                     </p>
 
                     <div className="space-y-2.5">
@@ -2551,23 +2734,23 @@ export default function App() {
                   <div className="pt-2 pb-1 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs animate-in fade-in duration-200">
                     <div className="flex items-center gap-2 text-slate-300">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Правила сохранены. Чтобы применить их к договору, запустите повторный анализ:</span>
+                      <span>{t('step2.rulesSavedRecheckText')}</span>
                     </div>
                     <button
                       type="button"
                       disabled={isAnyRequestInFlight}
                       onClick={handleRecheckWithProfile}
-                      className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition-all shrink-0 active:scale-95 disabled:opacity-50"
+                      className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition-all shrink-0 active:scale-95 disabled:opacity-50 cursor-pointer"
                     >
                       {isAnalyzing ? (
                         <>
                           <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                          <span>Проверяем договор…</span>
+                          <span>{t('step2.recheckingBtnText')}</span>
                         </>
                       ) : (
                         <>
                           <RefreshCw className="w-3.5 h-3.5" />
-                          <span>Перепроверить</span>
+                          <span>{t('step2.recheckBtn')}</span>
                         </>
                       )}
                     </button>
@@ -2580,7 +2763,7 @@ export default function App() {
                       className="text-xs text-emerald-400 hover:text-emerald-300 underline underline-offset-4 hover:no-underline transition-colors inline-flex items-center gap-1.5 bg-transparent border-0 p-0 cursor-pointer"
                     >
                       <Sliders className="w-3.5 h-3.5" />
-                      <span>Задать свои правила и перепроверить</span>
+                      <span>{t('step2.setRulesAndRecheckLink')}</span>
                     </button>
                   </div>
                 ) : null}
@@ -2595,20 +2778,20 @@ export default function App() {
                       setAgreedFileError(null);
                       setIsAgreedUploadModalOpen(true);
                     }}
-                    className="sm:w-1/2 py-3.5 px-5 rounded-xl font-semibold text-xs sm:text-sm bg-[#0e141a] hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="sm:w-1/2 py-3.5 px-5 rounded-xl font-semibold text-xs sm:text-sm bg-[#0e141a] hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 hover:border-emerald-400/80 transition-all flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <Upload className="w-4 h-4 text-emerald-400" />
-                    <span>Загрузить согласованный документ</span>
+                    <span>{t('step2.uploadAgreedBtn')}</span>
                   </button>
 
                   <button
                     type="button"
                     disabled={isAnyExecutionRunning}
                     onClick={handleProceedToStamping}
-                    className="sm:w-1/2 relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="sm:w-1/2 relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-xs sm:text-sm text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <Lock className="w-4 h-4 text-slate-950" />
-                    <span>Перейти к фиксации договора</span>
+                    <span>{t('step2.proceedToStampingBtn')}</span>
                     <ArrowRight className="w-4 h-4 ml-1" />
                   </button>
                 </div>
@@ -2630,7 +2813,7 @@ export default function App() {
 
               <div className="space-y-2">
                 <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                  Фиксация цифрового отпечатка в блокчейне
+                  {t('step3.headerTitle')}
                 </h2>
 
                 {/* Индикатор статуса и версии активного файла на Шаге 3 */}
@@ -2639,12 +2822,12 @@ export default function App() {
                     {isAgreedVersion ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Согласованная версия v2 (заменена вручную)</span>
+                        <span>{t('step3.agreedVersionV2Manual')}</span>
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
                         <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Исходный черновик {analysisResult?.ловушки?.length ? '(найдены риски)' : ''}</span>
+                        <span>{t('step2.originalDraftBadge')} {analysisResult?.ловушки?.length ? t('step3.originalDraftRisks') : ''}</span>
                       </span>
                     )}
                   </div>
@@ -2654,21 +2837,21 @@ export default function App() {
                   {selectedFile ? (
                     <>
                       <div>
-                        Документ: <span className="text-white font-medium break-all">{selectedFile.name}</span> ({formatFileSize(selectedFile.size)}).
+                        {t('step3.docLabel')} <span className="text-white font-medium break-all">{selectedFile.name}</span> ({formatFileSize(selectedFile.size, currentLang)}).
                       </div>
                       {isAgreedVersion && originalFileName && (
                         <div className="text-xs text-emerald-400/90 font-medium flex items-center justify-center gap-1.5">
                           <RefreshCw className="w-3 h-3 text-emerald-400" />
-                          <span>Заменил исходный черновик: {originalFileName}</span>
+                          <span>{t('step3.replacedDraftLabel')} {originalFileName}</span>
                         </div>
                       )}
                       <div className="text-xs text-slate-400">
-                        В блокчейн Solana devnet будет записан только SHA-256 хеш документа.
+                        {t('step3.solanaDevnetNotice')}
                       </div>
                     </>
                   ) : (
                     <span className="text-amber-300 font-medium">
-                      Файл договора ещё не выбран. Сначала загрузите документ на Шаге 1.
+                      {t('step3.noFileWarning')}
                     </span>
                   )}
                 </div>
@@ -2688,8 +2871,25 @@ export default function App() {
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-3 h-3 text-emerald-400" />
-                    <span>Загрузить другую согласованную версию</span>
+                    <span>{t('step3.uploadAnotherAgreedBtn')}</span>
                   </button>
+                </div>
+              )}
+
+              {/* Чекбокс подтверждения рисков перед фиксацией */}
+              {hasContractRisks && (
+                <div className="pt-2 max-w-md mx-auto">
+                  <label className="flex items-start gap-2.5 p-3.5 rounded-xl bg-amber-950/20 border border-amber-500/30 text-left cursor-pointer hover:border-amber-500/50 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={isRiskAcknowledged}
+                      onChange={(e) => setIsRiskAcknowledged(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded text-emerald-500 focus:ring-emerald-400 focus:ring-offset-0 bg-[#080c0f] border-slate-700 cursor-pointer shrink-0"
+                    />
+                    <span className="text-xs text-amber-200 select-none leading-relaxed">
+                      {t('step3.riskAcknowledgeLabel')}
+                    </span>
+                  </label>
                 </div>
               )}
 
@@ -2698,18 +2898,22 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleStamp}
-                  disabled={isProcessingStamp || isAnyRequestInFlight}
-                  className="w-full max-w-md mx-auto relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] transition-all shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] disabled:opacity-75 disabled:cursor-wait flex items-center justify-center gap-2"
+                  disabled={isProcessingStamp || isAnyRequestInFlight || (hasContractRisks && !isRiskAcknowledged)}
+                  className={`w-full max-w-md mx-auto relative group overflow-hidden py-3.5 px-6 rounded-xl font-semibold text-sm sm:text-base transition-all flex items-center justify-center gap-2 ${
+                    hasContractRisks && !isRiskAcknowledged
+                      ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60 shadow-none'
+                      : 'text-slate-950 bg-emerald-400 hover:bg-emerald-300 active:scale-[0.99] shadow-[0_0_25px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.4)] disabled:opacity-75 disabled:cursor-wait'
+                  }`}
                 >
                   {isProcessingStamp ? (
                     <>
                       <div className="w-5 h-5 border-2 border-slate-950/30 border-t-slate-950 rounded-full animate-spin" />
-                      <span>Записываем в блокчейн…</span>
+                      <span>{t('step3.stampingInProgressBtn')}</span>
                     </>
                   ) : (
                     <>
                       <Lock className="w-4 h-4 text-slate-950" />
-                      <span>Зафиксировать договор</span>
+                      <span>{t('step3.stampContractBtn')}</span>
                     </>
                   )}
                 </button>
@@ -2723,7 +2927,7 @@ export default function App() {
                     className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors inline-flex items-center gap-1.5"
                   >
                     <Upload className="w-3.5 h-3.5" />
-                    <span>Перейти к загрузке договора</span>
+                    <span>{t('step3.goToUploadLink')}</span>
                   </button>
                 </div>
               )}
@@ -2740,10 +2944,10 @@ export default function App() {
                     </div>
                     <div>
                       <div className="text-emerald-300 font-bold text-base">
-                        Записано в блокчейн
+                        {t('step3.successBannerTitle')}
                       </div>
                       <div className="text-xs text-emerald-400/80">
-                        Неизменяемый криптографический отпечаток сохранён в Solana Devnet
+                        {t('step3.successBannerSub')}
                       </div>
                     </div>
                   </div>
@@ -2755,7 +2959,7 @@ export default function App() {
                       rel="noreferrer"
                       className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-semibold text-xs sm:text-sm transition-all shadow-sm"
                     >
-                      <span>Посмотреть запись</span>
+                      <span>{t('step3.viewRecordBtn')}</span>
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   )}
@@ -2766,7 +2970,7 @@ export default function App() {
                   {/* Название документа */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Название документа
+                      {t('step3.docNameLabel')}
                     </span>
                     <span className="sm:col-span-2 text-sm sm:text-base font-semibold text-white break-words">
                       {record.fileName} {record.fileSize ? `(${record.fileSize})` : ''}
@@ -2776,23 +2980,23 @@ export default function App() {
                   {/* Версия документа */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Версия документа
+                      {t('step3.docVersionLabel')}
                     </span>
                     <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
-                      {record.versionLabel?.includes('Согласованная') ? (
+                      {isAgreedVersion || record.versionLabel?.includes('Согласованная') || record.versionLabel?.includes('Agreed') ? (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>{record.versionLabel}</span>
+                          <span>{t('step3.agreedVersionV2Manual')}</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">
                           <FileText className="w-3.5 h-3.5 text-slate-400" />
-                          <span>Исходный черновик</span>
+                          <span>{t('step2.originalDraftBadge')}</span>
                         </span>
                       )}
                       {record.originalFileName && (
                         <span className="text-[11px] text-slate-400">
-                          (заменил: <span className="text-slate-300 font-mono">{record.originalFileName}</span>)
+                          ({t('step3.replacedDraftLabel')} <span className="text-slate-300 font-mono">{record.originalFileName}</span>)
                         </span>
                       )}
                     </div>
@@ -2801,12 +3005,12 @@ export default function App() {
                   {/* Статус */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Статус
+                      {t('step3.statusLabel')}
                     </span>
                     <div className="sm:col-span-2 flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                       <span className="text-sm font-semibold text-emerald-400">
-                        {record.status}
+                        {t('step3.statusFixed')}
                       </span>
                     </div>
                   </div>
@@ -2814,7 +3018,7 @@ export default function App() {
                   {/* Цифровой отпечаток (хеш) */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider self-start pt-1">
-                      Цифровой отпечаток (хеш)
+                      {t('step3.hashLabel')}
                     </span>
                     <div className="sm:col-span-2">
                       <div className="bg-[#080c0f] border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3 group hover:border-slate-700 transition-colors">
@@ -2825,23 +3029,23 @@ export default function App() {
                           type="button"
                           onClick={() => copyToClipboard(record.hash, setCopiedHash)}
                           className="shrink-0 p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1.5 text-xs"
-                          title="Скопировать отпечаток"
+                          title={t('step3.copyHashTooltip')}
                         >
                           {copiedHash ? (
                             <>
                               <Check className="w-3.5 h-3.5 text-emerald-400" />
-                              <span className="text-emerald-400 hidden sm:inline">Скопировано</span>
+                              <span className="text-emerald-400 hidden sm:inline">{t('step3.hashCopied')}</span>
                             </>
                           ) : (
                             <>
                               <Copy className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">Копировать</span>
+                              <span className="hidden sm:inline">{t('step3.hashCopy')}</span>
                             </>
                           )}
                         </button>
                       </div>
                       <p className="text-[11px] text-slate-400 mt-1.5">
-                        Вычислен алгоритмом SHA-256 прямо в браузере. В блокчейн передан только хеш.
+                        {t('step3.hashComputedNote')}
                       </p>
                     </div>
                   </div>
@@ -2850,7 +3054,7 @@ export default function App() {
                   {record.signature && (
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50">
                       <span className="text-xs font-medium text-slate-400 uppercase tracking-wider self-start pt-1">
-                        Транзакция в сети
+                        {t('step3.txNetworkLabel')}
                       </span>
                       <div className="sm:col-span-2">
                         <div className="bg-[#080c0f] border border-slate-800 rounded-xl p-2.5 flex items-center justify-between gap-2">
@@ -2863,7 +3067,7 @@ export default function App() {
                             rel="noreferrer"
                             className="text-xs text-emerald-400 hover:text-emerald-300 font-medium shrink-0 flex items-center gap-1"
                           >
-                            <span>Explorer</span>
+                            <span>{t('step3.explorerBtn')}</span>
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         </div>
@@ -2874,47 +3078,88 @@ export default function App() {
                   {/* Дата и время фиксации */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Дата и время фиксации
+                      {t('step3.timestampLabel')}
                     </span>
                     <div className="sm:col-span-2 flex items-center gap-2 text-sm text-slate-200">
                       <Clock className="w-4 h-4 text-slate-400 shrink-0" />
-                      <span>{record.timestamp}</span>
+                      <span>{record.timestampMs ? formatDateTime(record.timestampMs, currentLang) : record.timestamp}</span>
                     </div>
                   </div>
 
-                  {/* Подтверждение */}
+                  {/* Кем зафиксировано */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Подтверждение
+                      {t('step3.recordedByLabel')}
                     </span>
                     <div className="sm:col-span-2 flex items-center gap-2 text-sm text-slate-200">
                       <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                      <span>{record.recordedBy}</span>
+                      <span>
+                        {record.recordedByAddress ? t('step3.recordedFromWallet', { addr: record.recordedByAddress }) : record.recordedBy}
+                      </span>
                     </div>
                   </div>
 
                   {/* Сеть */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-4 py-2 border-b border-slate-800/50 items-center">
                     <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Сеть
+                      {t('step3.networkLabel')}
                     </span>
                     <div className="sm:col-span-2 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-teal-400 animate-pulse"></span>
                       <span className="text-sm font-medium text-slate-200">
-                        Solana (devnet)
+                        {t('step3.networkSolanaDevnet')}
                       </span>
                     </div>
                   </div>
+
+                  {/* Ссылка для проверки контрагентом */}
+                  {record.signature && (
+                    <div className="mt-4 p-4 rounded-xl bg-[#080c0f] border border-emerald-500/30 space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                          <ExternalLink className="w-4 h-4 text-emerald-400" />
+                          <span>{t('step3.shareLinkTitle')}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const shareUrl = `${window.location.origin}/?tx=${record.signature}`;
+                            copyToClipboard(shareUrl, setCopiedShareLink);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          title={t('step3.shareLinkCopyTooltip')}
+                        >
+                          {copiedShareLink ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>{t('step3.hashCopied')}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>{t('step3.hashCopy')}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 font-mono text-xs text-emerald-300/90 break-all select-all">
+                        {`${window.location.origin}/?tx=${record.signature}`}
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        {t('step3.shareLinkDesc')}
+                      </p>
+                    </div>
+                  )}
 
                   {/* Пояснение */}
                   <div className="mt-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/20 text-emerald-200/90 text-sm flex items-start gap-3">
                     <Info className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                     <div className="space-y-1">
                       <p className="font-medium text-emerald-300">
-                        {record.explanation}
+                        {t('step3.explanationTitle')}
                       </p>
                       <p className="text-xs text-emerald-400/70">
-                        Текст документа надёжно привязан к блокчейну. Если контрагент предоставит отредактированный экземпляр, хеш не совпадёт.
+                        {t('step3.explanationSub')}
                       </p>
                     </div>
                   </div>
@@ -2929,24 +3174,24 @@ export default function App() {
                   >
                     <span className="flex items-center gap-2">
                       <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Как проверить, что договор не был изменен? (Интерактивная демонстрация)</span>
+                      <span>{t('step3.tamperDemoToggle')}</span>
                     </span>
                     <span className="text-emerald-400 font-medium">
-                      {tamperMode ? 'Скрыть' : 'Показать'}
+                      {tamperMode ? t('step3.tamperHide') : t('step3.tamperShow')}
                     </span>
                   </button>
 
                   {tamperMode && (
                     <div className="mt-3 p-4 rounded-xl bg-[#090d10] border border-slate-800 text-xs space-y-3 animate-in fade-in duration-300">
                       <p className="text-slate-300 font-medium">
-                        Сравнение отпечатков при попытке изменить даже 1 знак:
+                        {t('step3.tamperIntro')}
                       </p>
 
                       <div className="space-y-2">
                         <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-500/20">
                           <div className="flex items-center justify-between text-[11px] text-emerald-400 font-semibold mb-1">
-                            <span>Оригинал договора</span>
-                            <span>Хеш совпадает ✓</span>
+                            <span>{t('step3.tamperOriginalTitle')}</span>
+                            <span>{t('step3.tamperOriginalMatches')}</span>
                           </div>
                           <code className="text-[11px] font-mono text-emerald-300 break-all">
                             {record.hash}
@@ -2956,24 +3201,24 @@ export default function App() {
                         <div className="p-2.5 rounded-lg bg-red-950/20 border border-red-500/20">
                           <div className="flex items-center justify-between text-[11px] text-red-400 font-semibold mb-1">
                             <span className="flex items-center gap-2">
-                              <span>Измененная версия (изменение одного слова или суммы)</span>
+                              <span>{t('step3.tamperAlteredTitle')}</span>
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/20 text-red-300 border border-red-500/30">
-                                Пример для демонстрации
+                                {t('step3.tamperDemoBadge')}
                               </span>
                             </span>
-                            <span>Подделка обнаружена ✗</span>
+                            <span>{t('step3.tamperAlteredMismatch')}</span>
                           </div>
                           <code className="text-[11px] font-mono text-red-300/80 break-all block">
                             f810b49c2e018a33d7b8895021a81dc4901ba32efb6241097e324ef09000a187
                           </code>
                           <p className="text-[10px] text-red-400/80 mt-1 font-medium">
-                            Пример для демонстрации
+                            {t('step3.tamperDemoBadge')}
                           </p>
                         </div>
                       </div>
 
                       <p className="text-slate-400 text-[11px] leading-relaxed">
-                        В суде или досудебном споре в РК достаточно пересчитать хеш файла: если он совпадает с сохраненным в реестре, подлинность текста доказана со 100% математической точностью.
+                        {t('step3.tamperExplanation')}
                       </p>
                     </div>
                   )}
@@ -2984,17 +3229,26 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      const cert = `СВИДЕТЕЛЬСТВО ФИКСАЦИИ KELISIM\n` +
-                        `Документ: ${record.fileName}${record.fileSize ? ` (${record.fileSize})` : ''}\n` +
-                        `Версия: ${record.versionLabel || (isAgreedVersion ? 'Согласованная версия v2' : 'Исходный черновик')}${record.originalFileName ? ` (исходный черновик: ${record.originalFileName})` : ''}\n` +
-                        `Статус: ${record.status}\n` +
+                      const certVersion = isAgreedVersion || record.versionLabel?.includes('Согласованная') || record.versionLabel?.includes('Agreed')
+                        ? t('step3.agreedVersionV2Manual')
+                        : t('step2.originalDraftBadge');
+                      const certOriginalDraft = record.originalFileName
+                        ? ` (${t('step3.certificateOriginalDraft')} ${record.originalFileName})`
+                        : '';
+                      const certRecordedBy = record.recordedByAddress
+                        ? t('step3.recordedFromWallet', { addr: record.recordedByAddress })
+                        : record.recordedBy;
+                      const cert = `${t('step3.certificateTextTitle')}\n` +
+                        `${t('step3.certificateDoc')} ${record.fileName}${record.fileSize ? ` (${record.fileSize})` : ''}\n` +
+                        `${t('step3.certificateVersion')} ${certVersion}${certOriginalDraft}\n` +
+                        `${t('step3.certificateStatus')} ${t('step3.statusFixed')}\n` +
                         `SHA-256: ${record.hash}\n` +
-                        `Транзакция: ${record.signature ?? '—'}\n` +
-                        `Дата/Время: ${record.timestamp}\n` +
-                        `Сеть: ${record.network}\n` +
-                        `${record.recordedBy}\n` +
+                        `${t('step3.certificateTx')} ${record.signature ?? '—'}\n` +
+                        `${t('step3.certificateDateTime')} ${record.timestampMs ? formatDateTime(record.timestampMs, currentLang) : record.timestamp}\n` +
+                        `${t('step3.certificateNetwork')} ${record.network}\n` +
+                        `${certRecordedBy}\n` +
                         `Explorer: ${record.explorerUrl ?? '—'}\n` +
-                        `Сервис: Kelisim (Казахстан)`;
+                        `${t('step3.certificateService')}`;
                       copyToClipboard(cert, setCopiedCertificate);
                     }}
                     className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700/60 text-xs font-medium transition-colors flex items-center gap-2"
@@ -3002,12 +3256,12 @@ export default function App() {
                     {copiedCertificate ? (
                       <>
                         <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        <span className="text-emerald-400">Свидетельство скопировано</span>
+                        <span className="text-emerald-400">{t('step3.certificateCopied')}</span>
                       </>
                     ) : (
                       <>
                         <Copy className="w-3.5 h-3.5 text-slate-400" />
-                        <span>Скопировать свидетельство фиксации</span>
+                        <span>{t('step3.copyCertificateBtn')}</span>
                       </>
                     )}
                   </button>
@@ -3018,7 +3272,7 @@ export default function App() {
                     className="px-4 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-medium transition-colors flex items-center gap-2"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Зафиксировать новый договор</span>
+                    <span>{t('step3.stampNewContractBtn')}</span>
                   </button>
                 </div>
               </div>
@@ -3030,20 +3284,20 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <History className="w-4 h-4 text-emerald-400" />
                   <h3 className="font-bold text-white text-sm sm:text-base">
-                    Список всех записей в Solana (devnet)
+                    {t('step3.historyTitle')}
                   </h3>
                 </div>
                 <span className="text-xs text-slate-400 font-mono">
-                  Записей: {blockchainRecords.length}
+                  {t('step3.recordsCountLabel')} {blockchainRecords.length}
                 </span>
               </div>
 
               {blockchainRecords.length === 0 ? (
                 <div className="py-8 text-center text-xs text-slate-400 space-y-2">
                   <Database className="w-8 h-8 text-slate-700 mx-auto" />
-                  <p>Пока нет записей в блокчейне.</p>
+                  <p>{t('step3.noRecordsYet')}</p>
                   <p className="text-[11px] text-slate-400">
-                    После нажатия «Зафиксировать договор» здесь появится подтверждённая транзакция со ссылкой на Solana Explorer.
+                    {t('step3.noRecordsHint')}
                   </p>
                 </div>
               ) : (
@@ -3060,7 +3314,7 @@ export default function App() {
                         </div>
                         <div className="text-[11px] text-slate-400 shrink-0 flex items-center gap-1.5">
                           <Clock className="w-3.5 h-3.5" />
-                          <span>{item.timestamp}</span>
+                          <span>{item.timestampMs ? formatDateTime(item.timestampMs, currentLang) : item.timestamp}</span>
                         </div>
                       </div>
 
@@ -3075,7 +3329,7 @@ export default function App() {
                             setTimeout(() => setCopiedRecordTx(null), 2000);
                           }}
                           className="shrink-0 p-1 text-slate-400 hover:text-white"
-                          title="Скопировать текст записи"
+                          title={t('step3.copyRecordTxTooltip')}
                         >
                           {copiedRecordTx === item.id ? (
                             <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -3088,7 +3342,7 @@ export default function App() {
                       {/* Ссылка на Explorer */}
                       <div className="flex items-center justify-between pt-1 text-[11px]">
                         <span className="text-slate-400 font-mono">
-                          tx: {formatAddress(item.signature)}
+                          {t('step3.txLabel')} {formatAddress(item.signature)}
                         </span>
                         <a
                           href={item.explorerUrl}
@@ -3096,7 +3350,7 @@ export default function App() {
                           rel="noreferrer"
                           className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-medium"
                         >
-                          <span>Посмотреть запись</span>
+                          <span>{t('step3.viewRecordBtn')}</span>
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       </div>
@@ -3115,30 +3369,30 @@ export default function App() {
           <div className="p-4 rounded-xl bg-[#0e141a]/60 border border-slate-800/80">
             <div className="text-emerald-400 font-semibold text-sm mb-1 flex items-center gap-2">
               <FileText className="w-4 h-4" />
-              <span>Первая проверка без юриста</span>
+              <span>{t('highlights.card1Title')}</span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Выявляйте скрытые невыгодные условия и формулируйте аргументированные правки контрагенту.
+              {t('highlights.card1Desc')}
             </p>
           </div>
 
           <div className="p-4 rounded-xl bg-[#0e141a]/60 border border-slate-800/80">
             <div className="text-emerald-400 font-semibold text-sm mb-1 flex items-center gap-2">
               <Coins className="w-4 h-4" />
-              <span>Оценка рисков</span>
+              <span>{t('highlights.card2Title')}</span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Наглядный финансовый расчёт потенциальных штрафов и скрытых сборов до момента подписания.
+              {t('highlights.card2Desc')}
             </p>
           </div>
 
           <div className="p-4 rounded-xl bg-[#0e141a]/60 border border-slate-800/80">
             <div className="text-emerald-400 font-semibold text-sm mb-1 flex items-center gap-2">
               <ShieldCheck className="w-4 h-4" />
-              <span>Неизменяемость</span>
+              <span>{t('highlights.card3Title')}</span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Запись SHA-256 в Solana позволяет доказать, что документ не менялся: любая правка сразу видна по несовпадению хеша.
+              {t('highlights.card3Desc')}
             </p>
           </div>
         </div>
@@ -3153,13 +3407,14 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <Send className="w-5 h-5 text-emerald-400" />
                 <h3 className="text-base sm:text-lg font-bold text-white">
-                  Письмо с правками для контрагента
+                  {t('modals.letterModal.title')}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setIsLetterModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                title={t('modals.letterModal.closeBtn')}
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3167,7 +3422,7 @@ export default function App() {
 
             <div className="py-4 flex-1 overflow-y-auto space-y-3">
               <p className="text-xs text-slate-400">
-                Готовое деловое письмо от ИИ. Вы можете отредактировать текст перед отправкой:
+                {t('modals.letterModal.intro')}
               </p>
               
               <textarea
@@ -3175,7 +3430,7 @@ export default function App() {
                 onChange={(e) => setLetterText(e.target.value)}
                 rows={12}
                 className="w-full p-4 rounded-xl bg-[#080c0f] border border-slate-800 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-slate-200 font-sans leading-relaxed resize-y selection:bg-emerald-500/30"
-                placeholder="Текст письма..."
+                placeholder={t('modals.letterModal.placeholder')}
               />
             </div>
 
@@ -3183,17 +3438,17 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => copyToClipboard(letterText, setCopiedLetter)}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2"
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 {copiedLetter ? (
                   <>
                     <Check className="w-4 h-4 text-slate-950" />
-                    <span>Текст скопирован!</span>
+                    <span>{t('modals.letterModal.copiedBtn')}</span>
                   </>
                 ) : (
                   <>
                     <Copy className="w-4 h-4" />
-                    <span>Копировать текст</span>
+                    <span>{t('modals.letterModal.copyBtn')}</span>
                   </>
                 )}
               </button>
@@ -3201,79 +3456,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsLetterModalOpen(false)}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-medium transition-colors"
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-medium transition-colors cursor-pointer"
               >
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 1: Предупреждающий баннер / защита от случайной фиксации договора с рисками */}
-      {isRiskWarningModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-[#0e141a] border border-amber-500/40 rounded-2xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative flex flex-col space-y-5 animate-in zoom-in-95 duration-200">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-                  <ShieldAlert className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-white">
-                    Внимание: договор содержит выявленные риски
-                  </h3>
-                  <div className="mt-1">
-                    <span className="inline-block text-[11px] font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                      {analysisResult?.общий_уровень_риска === 'высокий' ? 'Высокий уровень риска' : 'Средний уровень риска'} · {analysisResult?.ловушки?.length || 0} условий требует внимания
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsRiskWarningModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                title="Закрыть"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-500/20 text-xs sm:text-sm text-slate-300 leading-relaxed space-y-2">
-              <p>
-                Вы собираетесь зафиксировать в блокчейне версию, содержащую невыгодные условия или ловушки. Если контрагент уже согласился на правки, сначала загрузите согласованный вариант.
-              </p>
-              <div className="text-[11px] text-slate-400 pt-1 border-t border-amber-500/20 flex items-center justify-between">
-                <span>Текущий файл с ловушками:</span>
-                <span className="font-mono text-white font-medium truncate max-w-[220px]">
-                  {selectedFile?.name}
-                </span>
-              </div>
-            </div>
-
-            <div className="pt-2 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => setIsRiskWarningModalOpen(false)}
-                className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-sm"
-              >
-                <span>Вернуться</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsRiskWarningModalOpen(false);
-                  setIsStep3Unlocked(true);
-                  setCurrentStep(3);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/70 text-xs transition-colors flex items-center justify-center gap-2"
-                title="Зафиксировать входящий черновик как доказательство разногласий"
-              >
-                <Lock className="w-3.5 h-3.5 text-slate-400" />
-                <span>Всё равно зафиксировать эту версию (для доказательства разногласий)</span>
+                {t('modals.letterModal.closeBtn')}
               </button>
             </div>
           </div>
@@ -3292,10 +3477,10 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-white">
-                    Загрузить согласованный документ
+                    {t('modals.agreedModal.title')}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Замена документа на согласованную редакцию перед фиксацией
+                    {t('modals.agreedModal.subtitle')}
                   </p>
                 </div>
               </div>
@@ -3306,8 +3491,8 @@ export default function App() {
                   setStagedAgreedFile(null);
                   setAgreedFileError(null);
                 }}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                title="Закрыть"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                title={t('modals.agreedModal.cancelBtn')}
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3321,25 +3506,25 @@ export default function App() {
                     <FileText className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
-                    <div className="text-[11px] text-slate-400">Предыдущая версия (с ловушками):</div>
+                    <div className="text-[11px] text-slate-400">{t('modals.agreedModal.prevVersionLabel')}</div>
                     <div className="font-semibold text-slate-200 truncate">
-                      {originalFileName || selectedFile?.name || 'Исходный черновик'}
+                      {originalFileName || selectedFile?.name || t('step2.originalDraftBadge')}
                     </div>
                   </div>
                 </div>
                 <span className="shrink-0 text-[10px] font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                  {analysisResult?.ловушки?.length ? `${analysisResult.ловушки.length} ловушек` : 'Риски'}
+                  {analysisResult?.ловушки?.length ? `${analysisResult.ловушки.length} ${t('modals.agreedModal.trapsSuffix')}` : t('modals.agreedModal.risksLabel')}
                 </span>
               </div>
 
               {/* Error banner if file invalid */}
               {agreedFileError && (
                 <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
-                  <span>{agreedFileError}</span>
+                  <span>{getLocalizedErrorMessage(agreedFileError, currentLang)}</span>
                   <button
                     type="button"
                     onClick={() => setAgreedFileError(null)}
-                    className="text-rose-400 hover:text-white"
+                    className="text-rose-400 hover:text-white cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -3373,13 +3558,13 @@ export default function App() {
                       <Upload className="w-6 h-6" />
                     </div>
                     <p className="font-semibold text-white text-sm sm:text-base">
-                      Перетащите согласованный с контрагентом документ сюда
+                      {t('modals.agreedModal.dragDropPrompt')}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
-                      или нажмите для выбора файла на устройстве
+                      {t('modals.agreedModal.browsePrompt')}
                     </p>
                     <p className="text-[11px] text-emerald-400/80 mt-2">
-                      Поддерживаются PDF, DOCX, TXT, PNG, JPG до 4 МБ
+                      {t('modals.agreedModal.fileFormats')}
                     </p>
                   </div>
                 </div>
@@ -3392,14 +3577,14 @@ export default function App() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
-                          Выбран новый согласованный файл:
+                          {t('modals.agreedModal.selectedNewFile')}
                         </span>
                       </div>
                       <div className="font-semibold text-white text-sm truncate">
                         {stagedAgreedFile.name}
                       </div>
                       <div className="text-xs text-slate-400">
-                        {formatFileSize(stagedAgreedFile.size)} · Готов к обработке
+                        {formatFileSize(stagedAgreedFile.size, currentLang)} · {t('modals.agreedModal.readyForProcessing')}
                       </div>
                     </div>
                   </div>
@@ -3410,9 +3595,9 @@ export default function App() {
                       setStagedAgreedFile(null);
                       if (agreedFileInputRef.current) agreedFileInputRef.current.value = '';
                     }}
-                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-700 transition-colors"
+                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-700 transition-colors cursor-pointer"
                   >
-                    Заменить
+                    {t('modals.agreedModal.replaceBtn')}
                   </button>
                 </div>
               )}
@@ -3421,7 +3606,7 @@ export default function App() {
               {stagedAgreedFile && (
                 <div className="space-y-3 pt-2">
                   <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                    Выберите дальнейшее действие:
+                    {t('modals.agreedModal.chooseActionLabel')}
                   </div>
 
                   {/* Вариант А: Быстрая повторная экспресс-проверка */}
@@ -3429,7 +3614,7 @@ export default function App() {
                     type="button"
                     onClick={() => handleApplyAgreedFile('recheck')}
                     disabled={isAnyRequestInFlight}
-                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/40 hover:border-emerald-400 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/40 hover:border-emerald-400 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <div className="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5 group-hover:scale-105 transition-transform">
                       <RefreshCw className="w-4 h-4" />
@@ -3437,14 +3622,14 @@ export default function App() {
                     <div className="space-y-1 flex-1">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-white text-xs sm:text-sm">
-                          Вариант А: Быстрая повторная экспресс-проверка
+                          {t('modals.agreedModal.optionATitle')}
                         </span>
                         <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                          Рекомендуется
+                          {t('modals.agreedModal.optionARecommended')}
                         </span>
                       </div>
                       <p className="text-[11px] sm:text-xs text-slate-400 leading-relaxed">
-                        Сравнить новую версию со списком найденных ловушек и выявить статус устранения.
+                        {t('modals.agreedModal.optionADesc')}
                       </p>
                     </div>
                   </button>
@@ -3454,17 +3639,17 @@ export default function App() {
                     type="button"
                     onClick={() => handleApplyAgreedFile('direct_stamp')}
                     disabled={isAnyRequestInFlight}
-                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full text-left p-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 transition-all flex items-start gap-3 group shadow-sm active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <div className="w-9 h-9 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 shrink-0 mt-0.5 group-hover:text-emerald-400 transition-colors">
                       <Lock className="w-4 h-4" />
                     </div>
                     <div className="space-y-1 flex-1">
                       <div className="font-bold text-white text-xs sm:text-sm">
-                        Вариант Б: Перейти сразу к фиксации
+                        {t('modals.agreedModal.optionBTitle')}
                       </div>
                       <p className="text-[11px] sm:text-xs text-slate-400 leading-relaxed">
-                        Обновить текущий файл на новый согласованный и сразу перейти на Шаг 3 (фиксация в Solana Devnet).
+                        {t('modals.agreedModal.optionBDesc')}
                       </p>
                     </div>
                   </button>
@@ -3481,9 +3666,96 @@ export default function App() {
                   setStagedAgreedFile(null);
                   setAgreedFileError(null);
                 }}
-                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-medium transition-colors"
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-medium transition-colors cursor-pointer"
               >
-                Отмена
+                {t('modals.agreedModal.cancelBtn')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Предупреждение о рисках при попытке перейти к фиксации */}
+      {isRiskWarningModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0e141a] border border-amber-500/50 rounded-2xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative flex flex-col space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white leading-snug">
+                    {t('modals.riskWarningModal.title')}
+                  </h3>
+                  <p className="text-xs text-amber-300/80">
+                    {t('modals.riskWarningModal.subtitle')}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRiskWarningModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                title={t('modals.riskWarningModal.closeTooltip')}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              {t('modals.riskWarningModal.desc')}
+            </p>
+
+            {analysisResult?.ловушки && analysisResult.ловушки.length > 0 && (
+              <div className="p-3.5 rounded-xl bg-amber-950/20 border border-amber-500/30 flex items-center gap-2.5 text-xs text-amber-200">
+                <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="font-semibold">
+                  {t('modals.riskWarningModal.detectedRisksCount', { count: analysisResult.ловушки.length })}
+                </span>
+              </div>
+            )}
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRiskWarningModalOpen(false);
+                  setStagedAgreedFile(null);
+                  setAgreedFileError(null);
+                  setIsAgreedUploadModalOpen(true);
+                }}
+                className="w-full py-3 px-4 rounded-xl font-semibold text-xs sm:text-sm bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+              >
+                <Upload className="w-4 h-4" />
+                <span>{t('modals.riskWarningModal.uploadAgreedBtn')}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRiskWarningModalOpen(false);
+                  handleGenerateLetter();
+                }}
+                className="w-full py-3 px-4 rounded-xl font-medium text-xs sm:text-sm bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 hover:border-slate-600 transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Send className="w-4 h-4 text-emerald-400" />
+                <span>{t('modals.riskWarningModal.draftLetterBtn')}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRiskAcknowledged(true);
+                  setIsStep3Unlocked(true);
+                  setIsRiskWarningModalOpen(false);
+                  setCurrentStep(3);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="w-full py-2.5 px-4 rounded-xl text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-900/60 transition-all flex items-center justify-center gap-1.5 cursor-pointer border-0 bg-transparent"
+              >
+                <span>{t('modals.riskWarningModal.proceedAnywayBtn')}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -3500,30 +3772,30 @@ export default function App() {
                   <AlertTriangle className="w-5 h-5" />
                 </div>
                 <h3 className="text-base font-bold text-white leading-snug">
-                  Вернуться на главную? Текущий прогресс будет потерян
+                  {t('modals.confirmHomeModal.title')}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setIsConfirmReturnHomeOpen(false)}
                 className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                title="Закрыть"
+                title={t('profile.closeTooltip')}
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Загруженный документ, результаты анализа и текущий шаг будут сброшены. Вы уверены, что хотите выйти на главный экран?
+              {t('modals.confirmHomeModal.desc')}
             </p>
 
             <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setIsConfirmReturnHomeOpen(false)}
-                className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs sm:text-sm transition-all"
+                className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs sm:text-sm transition-all cursor-pointer"
               >
-                Остаться
+                {t('modals.confirmHomeModal.stayBtn')}
               </button>
               <button
                 type="button"
@@ -3531,9 +3803,9 @@ export default function App() {
                   setIsConfirmReturnHomeOpen(false);
                   handleResetAll();
                 }}
-                className="py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs sm:text-sm transition-all shadow-sm"
+                className="py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs sm:text-sm transition-all shadow-sm cursor-pointer"
               >
-                Вернуться
+                {t('modals.confirmHomeModal.returnBtn')}
               </button>
             </div>
           </div>
@@ -3547,6 +3819,7 @@ export default function App() {
         initialProfile={businessProfile}
         onSave={handleSaveProfile}
         onClear={handleClearProfile}
+        lang={currentLang}
       />
 
       {/* Footer */}
@@ -3555,12 +3828,12 @@ export default function App() {
           <div className="flex items-center gap-3">
             <KelisimLogo size="sm" showSubtitle={false} interactive={false} />
             <span className="hidden sm:inline">·</span>
-            <span className="hidden sm:inline">Проверка и фиксация договоров в блокчейне Solana</span>
+            <span className="hidden sm:inline">{t('footer.tagline')}</span>
           </div>
           <div className="flex items-center gap-4 text-slate-400">
-            <span className="text-amber-400/80 font-medium">Предварительная проверка, не юридическая консультация</span>
+            <span className="text-amber-400/80 font-medium">{t('footer.disclaimer')}</span>
             <span>·</span>
-            <span className="text-emerald-400/90 font-mono">SPL Memo Program</span>
+            <span className="text-emerald-400/90 font-mono">{t('footer.memoProgram')}</span>
           </div>
         </div>
       </footer>

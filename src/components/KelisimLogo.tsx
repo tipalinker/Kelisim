@@ -100,12 +100,9 @@ export const KelisimLogo: React.FC<KelisimLogoProps> = ({
           <span className={`font-black tracking-wider uppercase text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 drop-shadow-sm font-sans ${titleSize}`}>
             KELISIM
           </span>
-          <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300 bg-emerald-950/80 border border-emerald-500/40 px-1.5 py-0.5 rounded shadow-sm">
-            KZ
-          </span>
         </div>
         {showSubtitle && (
-          <span className={`uppercase font-semibold text-emerald-400/90 font-mono ${subtitleSize} -mt-0.5`}>
+          <span className={`uppercase font-semibold text-emerald-400/90 font-mono ${subtitleSize} -mt-0.5 hidden min-[440px]:block`}>
             LEGAL-TECH BLOCKCHAIN
           </span>
         )}

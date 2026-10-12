@@ -39,6 +39,7 @@ export interface BlockchainRecord {
   documentName: string;
   fileHash: string;
   timestamp: string;
+  timestampMs?: number;
   explorerUrl: string;
 }
 
@@ -100,7 +101,7 @@ export async function sendKelisimMemoTransaction(
   fileHash: string
 ): Promise<{ signature: string; memoText: string }> {
   if (!provider.publicKey) {
-    throw new Error('Кошелёк не подключён. Сначала подключите Phantom.');
+    throw new Error('Wallet not connected. Please connect Phantom first.');
   }
 
   const signerPublicKey = new PublicKey(provider.publicKey.toString());
@@ -128,7 +129,7 @@ export async function sendKelisimMemoTransaction(
   const signature = typeof result === 'string' ? result : result.signature;
 
   if (!signature) {
-    throw new Error('Не удалось получить подпись транзакции от Phantom.');
+    throw new Error('Failed to obtain transaction signature from Phantom.');
   }
 
   // Attempt confirmation in background / wait for confirmed commitment
@@ -146,16 +147,21 @@ export async function sendKelisimMemoTransaction(
 }
 
 /**
- * Translates errors to clear user-friendly Russian messages
+ * Translates Solana and Phantom transaction errors to clear user-friendly messages
  */
-export function parseSolanaError(error: any): string {
-  if (!error) return 'Неизвестная ошибка при отправке транзакции.';
+export function parseSolanaError(error: any, lang: 'en' | 'ru' = 'en'): string {
+  const isEn = lang === 'en';
+  if (!error) {
+    return isEn ? 'Unknown transaction error.' : 'Неизвестная ошибка при отправке транзакции.';
+  }
   
   const msg = typeof error === 'string' ? error : (error.message || '');
   const code = error.code;
 
   if (code === 4001 || msg.includes('User rejected') || msg.includes('cancelled') || msg.includes('отклонен')) {
-    return 'Транзакция отменена пользователем в кошельке Phantom.';
+    return isEn
+      ? 'Transaction was cancelled by user in Phantom wallet.'
+      : 'Транзакция отменена пользователем в кошельке Phantom.';
   }
 
   if (
@@ -164,16 +170,36 @@ export function parseSolanaError(error: any): string {
     msg.includes('0x1') ||
     msg.includes('Insufficient funds')
   ) {
-    return 'Недостаточно SOL на кошельке в сети devnet для оплаты комиссии. Получите бесплатные тестовые SOL на solfaucet.com.';
+    return isEn
+      ? 'Insufficient SOL in devnet wallet to pay transaction fee. Request free test SOL at solfaucet.com.'
+      : 'Недостаточно SOL на кошельке в сети devnet для оплаты комиссии. Получите бесплатные тестовые SOL на solfaucet.com.';
   }
 
   if (msg.includes('Blockhash not found') || msg.includes('expired')) {
-    return 'Время ожидания блока истекло. Пожалуйста, попробуйте отправить ещё раз.';
+    return isEn
+      ? 'Blockhash expired. Please try sending transaction again.'
+      : 'Время ожидания блока истекло. Пожалуйста, попробуйте отправить ещё раз.';
   }
 
   if (msg.includes('Failed to fetch') || msg.includes('network') || msg.includes('connection')) {
-    return 'Ошибка связи с сетью Solana devnet. Проверьте интернет-соединение или повторите через несколько секунд.';
+    return isEn
+      ? 'Network error connecting to Solana devnet. Check your internet connection or retry in a few seconds.'
+      : 'Ошибка связи с сетью Solana devnet. Проверьте интернет-соединение или повторите через несколько секунд.';
   }
 
-  return `Ошибка транзакции: ${msg || 'не удалось зафиксировать в блокчейне'}`;
+  if (msg.includes('Кошелёк не подключён') || msg.includes('Wallet not connected')) {
+    return isEn
+      ? 'Wallet is not connected. Please connect Phantom first.'
+      : 'Кошелёк не подключён. Сначала подключите Phantom.';
+  }
+
+  if (msg.includes('Не удалось получить подпись') || msg.includes('Failed to obtain transaction signature')) {
+    return isEn
+      ? 'Failed to obtain transaction signature from Phantom.'
+      : 'Не удалось получить подпись транзакции от Phantom.';
+  }
+
+  return isEn
+    ? `Transaction error: ${msg || 'failed to record to blockchain'}`
+    : `Ошибка транзакции: ${msg || 'не удалось зафиксировать в блокчейне'}`;
 }

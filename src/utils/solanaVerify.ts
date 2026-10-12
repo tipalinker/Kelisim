@@ -5,11 +5,13 @@
 
 import { Connection, clusterApiUrl } from '@solana/web3.js';
 import { calculateFileSha256 } from './solanaWallet';
+import { formatDateTime } from './translations';
 
 export interface VerificationOutcome {
   status: 'match' | 'mismatch' | 'no_kelisim_memo' | 'not_found' | 'error';
   message: string;
   blockTimestamp?: string;
+  blockTimeSeconds?: number;
   explorerUrl?: string;
   fileName?: string;
   fileHash?: string;
@@ -91,14 +93,18 @@ const MEMO_REGEX = /Kelisim\s*v1\s*\|\s*sha256:([a-fA-F0-9]{64})/i;
  */
 export async function verifyDocumentAgainstSolana(
   signatureOrUrl: string,
-  file: File
+  file: File,
+  lang: 'en' | 'ru' = 'en'
 ): Promise<VerificationOutcome> {
+  const isEn = lang === 'en';
   const cleanSignature = extractSolanaSignature(signatureOrUrl);
 
   if (!cleanSignature) {
     return {
       status: 'error',
-      message: 'Укажите ссылку на транзакцию в Solana Explorer или саму подпись транзакции.',
+      message: isEn
+        ? 'Please enter a transaction link from Solana Explorer or the transaction signature.'
+        : 'Укажите ссылку на транзакцию в Solana Explorer или саму подпись транзакции.',
     };
   }
 
@@ -106,7 +112,9 @@ export async function verifyDocumentAgainstSolana(
   if (!/^[1-9A-HJ-NP-za-km-z]{60,95}$/.test(cleanSignature)) {
     return {
       status: 'not_found',
-      message: 'Некорректный формат подписи транзакции. Подпись Solana состоит из 64–90 символов Base58.',
+      message: isEn
+        ? 'Invalid transaction signature format. A Solana signature consists of 64–90 Base58 characters.'
+        : 'Некорректный формат подписи транзакции. Подпись Solana состоит из 64–90 символов Base58.',
       signature: cleanSignature,
     };
   }
@@ -118,7 +126,9 @@ export async function verifyDocumentAgainstSolana(
   } catch (err: any) {
     return {
       status: 'error',
-      message: `Не удалось вычислить отпечаток файла: ${err?.message || 'ошибка чтения'}`,
+      message: isEn
+        ? `Failed to calculate file hash: ${err?.message || 'reading error'}`
+        : `Не удалось вычислить отпечаток файла: ${err?.message || 'ошибка чтения'}`,
     };
   }
 
@@ -161,7 +171,9 @@ export async function verifyDocumentAgainstSolana(
     console.error('Failed to fetch transaction from devnet RPC:', netErr);
     return {
       status: 'error',
-      message: 'Не удалось связаться с сетью Solana devnet. Проверьте интернет-соединение или повторите попытку через несколько секунд.',
+      message: isEn
+        ? 'Failed to connect to Solana devnet RPC. Please check your internet connection or retry in a few seconds.'
+        : 'Не удалось связаться с сетью Solana devnet. Проверьте интернет-соединение или повторите попытку через несколько секунд.',
       signature: cleanSignature,
       explorerUrl,
     };
@@ -170,7 +182,9 @@ export async function verifyDocumentAgainstSolana(
   if (!tx) {
     return {
       status: 'not_found',
-      message: 'Транзакция не найдена в сети Solana devnet. Проверьте правильность ссылки или подписи, а также убедитесь, что транзакция была отправлена в сеть devnet.',
+      message: isEn
+        ? 'Transaction not found on Solana devnet. Verify the link or signature, and make sure the transaction was submitted to devnet.'
+        : 'Транзакция не найдена в сети Solana devnet. Проверьте правильность ссылки или подписи, а также убедитесь, что транзакция была отправлена в сеть devnet.',
       signature: cleanSignature,
       explorerUrl,
     };
@@ -260,24 +274,18 @@ export async function verifyDocumentAgainstSolana(
   if (!blockchainHash) {
     return {
       status: 'no_kelisim_memo',
-      message: 'В транзакции нет записи Kelisim формата «Kelisim v1 | sha256:<хеш>». Убедитесь, что транзакция относится к сервису Kelisim.',
+      message: isEn
+        ? 'No Kelisim record in format "Kelisim v1 | sha256:<hash>" found in this transaction. Make sure the transaction was recorded via Kelisim.'
+        : 'В транзакции нет записи Kelisim формата «Kelisim v1 | sha256:<хеш>». Убедитесь, что транзакция относится к сервису Kelisim.',
       signature: cleanSignature,
       explorerUrl,
     };
   }
 
-  // 4. Format block timestamp
-  let blockTimestamp = 'неизвестно';
+  // 4. Format block timestamp according to chosen language
+  let blockTimestamp = isEn ? 'unknown' : 'неизвестно';
   if (tx.blockTime) {
-    const dt = new Date(tx.blockTime * 1000);
-    blockTimestamp = dt.toLocaleString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+    blockTimestamp = formatDateTime(tx.blockTime * 1000, lang);
   }
 
   const isMatch = fileHash.toLowerCase() === blockchainHash.toLowerCase();
@@ -285,8 +293,11 @@ export async function verifyDocumentAgainstSolana(
   if (isMatch) {
     return {
       status: 'match',
-      message: `Документ не изменялся. Хеш совпадает с записью в блокчейне от ${blockTimestamp}`,
+      message: isEn
+        ? `Document was not altered. Hash matches on-chain record from ${blockTimestamp}`
+        : `Документ не изменялся. Хеш совпадает с записью в блокчейне от ${blockTimestamp}`,
       blockTimestamp,
+      blockTimeSeconds: tx.blockTime,
       explorerUrl,
       fileName: file.name,
       fileHash,
@@ -297,8 +308,11 @@ export async function verifyDocumentAgainstSolana(
   } else {
     return {
       status: 'mismatch',
-      message: 'Документ отличается от зафиксированного',
+      message: isEn
+        ? 'Document differs from on-chain record'
+        : 'Документ отличается от зафиксированного',
       blockTimestamp,
+      blockTimeSeconds: tx.blockTime,
       explorerUrl,
       fileName: file.name,
       fileHash,

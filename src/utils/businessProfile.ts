@@ -4,10 +4,12 @@
  */
 
 export interface BusinessProfile {
-  role: 'арендатор' | 'арендодатель' | 'заказчик' | 'исполнитель' | 'покупатель' | 'поставщик' | '';
-  maxPenaltyPerDay: string;
+  role: string;
+  maxPenaltyPercent: string;
+  maxPenaltyPerDay?: string;
   maxPaymentDays: string;
-  minTerminationNoticeDays: string;
+  minNoticeDays: string;
+  minTerminationNoticeDays?: string;
   disputeCity: string;
   customRules: string;
 }
@@ -32,13 +34,17 @@ export const BUSINESS_ROLES = [
 export function getDefaultBusinessProfile(): BusinessProfile {
   return {
     role: '',
+    maxPenaltyPercent: '',
     maxPenaltyPerDay: '',
     maxPaymentDays: '',
+    minNoticeDays: '',
     minTerminationNoticeDays: '',
     disputeCity: '',
     customRules: '',
   };
 }
+
+export const defaultBusinessProfile = getDefaultBusinessProfile();
 
 export function getSavedBusinessProfile(): BusinessProfile {
   if (typeof window === 'undefined') return getDefaultBusinessProfile();
@@ -46,11 +52,15 @@ export function getSavedBusinessProfile(): BusinessProfile {
     const raw = localStorage.getItem(BUSINESS_PROFILE_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      const penalty = (parsed.maxPenaltyPercent ?? parsed.maxPenaltyPerDay ?? '').toString();
+      const notice = (parsed.minNoticeDays ?? parsed.minTerminationNoticeDays ?? '').toString();
       return {
         role: parsed.role || '',
-        maxPenaltyPerDay: parsed.maxPenaltyPerDay || '',
-        maxPaymentDays: parsed.maxPaymentDays || '',
-        minTerminationNoticeDays: parsed.minTerminationNoticeDays || '',
+        maxPenaltyPercent: penalty,
+        maxPenaltyPerDay: penalty,
+        maxPaymentDays: (parsed.maxPaymentDays ?? '').toString(),
+        minNoticeDays: notice,
+        minTerminationNoticeDays: notice,
         disputeCity: parsed.disputeCity || '',
         customRules: (parsed.customRules || '').slice(0, 300),
       };
@@ -64,11 +74,15 @@ export function getSavedBusinessProfile(): BusinessProfile {
 export function saveBusinessProfile(profile: BusinessProfile): boolean {
   if (typeof window === 'undefined') return false;
   try {
+    const penalty = (profile.maxPenaltyPercent ?? profile.maxPenaltyPerDay ?? '').toString().trim();
+    const notice = (profile.minNoticeDays ?? profile.minTerminationNoticeDays ?? '').toString().trim();
     const sanitized: BusinessProfile = {
-      role: profile.role || '',
-      maxPenaltyPerDay: profile.maxPenaltyPerDay ? String(profile.maxPenaltyPerDay).trim() : '',
-      maxPaymentDays: profile.maxPaymentDays ? String(profile.maxPaymentDays).trim() : '',
-      minTerminationNoticeDays: profile.minTerminationNoticeDays ? String(profile.minTerminationNoticeDays).trim() : '',
+      role: (profile.role || '').trim(),
+      maxPenaltyPercent: penalty,
+      maxPenaltyPerDay: penalty,
+      maxPaymentDays: (profile.maxPaymentDays ? String(profile.maxPaymentDays) : '').trim(),
+      minNoticeDays: notice,
+      minTerminationNoticeDays: notice,
       disputeCity: (profile.disputeCity || '').trim(),
       customRules: (profile.customRules || '').trim().slice(0, 300),
     };
@@ -91,11 +105,14 @@ export function clearBusinessProfile(): boolean {
   }
 }
 
-export function isBusinessProfileActive(profile: BusinessProfile): boolean {
+export function isBusinessProfileActive(profile?: BusinessProfile | null): boolean {
+  if (!profile) return false;
   return Boolean(
     profile.role ||
+    profile.maxPenaltyPercent ||
     profile.maxPenaltyPerDay ||
     profile.maxPaymentDays ||
+    profile.minNoticeDays ||
     profile.minTerminationNoticeDays ||
     profile.disputeCity?.trim() ||
     profile.customRules?.trim()
@@ -110,14 +127,16 @@ export function formatBusinessProfileForPrompt(profile: BusinessProfile): string
   if (profile.role) {
     parts.push(`Роль пользователя: ${profile.role}`);
   }
-  if (profile.maxPenaltyPerDay) {
-    parts.push(`Макс. неустойка в день: ${profile.maxPenaltyPerDay}%`);
+  const penalty = profile.maxPenaltyPercent || profile.maxPenaltyPerDay;
+  if (penalty) {
+    parts.push(`Макс. неустойка в день: ${penalty}%`);
   }
   if (profile.maxPaymentDays) {
     parts.push(`Макс. срок оплаты: ${profile.maxPaymentDays} дней`);
   }
-  if (profile.minTerminationNoticeDays) {
-    parts.push(`Мин. срок уведомления об отказе: ${profile.minTerminationNoticeDays} дней`);
+  const notice = profile.minNoticeDays || profile.minTerminationNoticeDays;
+  if (notice) {
+    parts.push(`Мин. срок уведомления об отказе: ${notice} дней`);
   }
   if (profile.disputeCity?.trim()) {
     parts.push(`Город для споров: ${profile.disputeCity.trim()}`);
@@ -126,4 +145,18 @@ export function formatBusinessProfileForPrompt(profile: BusinessProfile): string
     parts.push(`Доп. правила: ${profile.customRules.trim().slice(0, 300)}`);
   }
   return parts.join('. ');
+}
+
+export function formatProfileSummary(profile: BusinessProfile, lang: 'en' | 'ru' = 'en'): string {
+  const isEn = lang === 'en';
+  const parts: string[] = [];
+  if (profile.role) parts.push(isEn ? `Role: ${profile.role}` : `Роль: ${profile.role}`);
+  const penalty = profile.maxPenaltyPercent || profile.maxPenaltyPerDay;
+  if (penalty) parts.push(isEn ? `max penalty: ${penalty}%/day` : `макс. неустойка в день: ${penalty}%`);
+  if (profile.maxPaymentDays) parts.push(isEn ? `payment deadline: up to ${profile.maxPaymentDays} days` : `срок оплаты: до ${profile.maxPaymentDays} дн.`);
+  const notice = profile.minNoticeDays || profile.minTerminationNoticeDays;
+  if (notice) parts.push(isEn ? `notice: from ${notice} days` : `мин. срок уведомления: ${notice} дн.`);
+  if (profile.disputeCity) parts.push(isEn ? `court: ${profile.disputeCity}` : `город споров: ${profile.disputeCity}`);
+  if (profile.customRules && profile.customRules.trim()) parts.push(isEn ? `custom: ${profile.customRules.trim().slice(0, 300)}` : `доп. правила: ${profile.customRules.trim().slice(0, 300)}`);
+  return parts.join(', ');
 }

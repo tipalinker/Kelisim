@@ -154,23 +154,27 @@ function findKelisimMemoHash(tx: any): { memoText: string; hash: string } | null
 }
 
 /**
- * Formats a block Unix timestamp into readable Russian date & time (Almaty time)
+ * Formats a block Unix timestamp into readable date & time in Asia/Almaty time zone
  */
-function formatBlockTime(blockTimeSeconds?: number | null): string {
-  if (!blockTimeSeconds) return 'недавнего блока';
+function formatBlockTime(blockTimeSeconds?: number | null, lang: 'en' | 'ru' = 'en'): string {
+  if (!blockTimeSeconds) return lang === 'en' ? 'recent block' : 'недавний блок';
   try {
     const date = new Date(blockTimeSeconds * 1000);
-    return new Intl.DateTimeFormat('ru-RU', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      timeZone: 'Asia/Almaty',
-    }).format(date) + ' (GMT+5)';
+    const locale = lang === 'en' ? 'en-US' : 'ru-RU';
+    return (
+      new Intl.DateTimeFormat(locale, {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+        timeZone: 'Asia/Almaty',
+      }).format(date) + ' GMT+5'
+    );
   } catch {
-    return 'недавнего блока';
+    return lang === 'en' ? 'recent block' : 'недавний блок';
   }
 }
 
@@ -183,14 +187,18 @@ function formatBlockTime(blockTimeSeconds?: number | null): string {
  */
 export async function verifyDocumentWithoutWallet(
   signatureOrUrl: string,
-  file: File
+  file: File,
+  lang: 'en' | 'ru' = 'en'
 ): Promise<VerificationResult> {
+  const isEn = lang === 'en';
   const signature = extractSolanaSignature(signatureOrUrl);
 
   if (!signature) {
     return {
       status: 'error',
-      message: 'Некорректная ссылка или подпись транзакции Solana. Вставьте ссылку на Solana Explorer или 88-значную подпись.',
+      message: isEn
+        ? 'Invalid Solana transaction link or signature. Please paste a Solana Explorer link or signature.'
+        : 'Некорректная ссылка или подпись транзакции Solana. Вставьте ссылку на Solana Explorer или 88-значную подпись.',
     };
   }
 
@@ -202,7 +210,9 @@ export async function verifyDocumentWithoutWallet(
   } catch (err: any) {
     return {
       status: 'error',
-      message: `Не удалось вычислить цифровой отпечаток файла: ${err?.message || 'ошибка чтения'}`,
+      message: isEn
+        ? `Failed to calculate file hash: ${err?.message || 'reading error'}`
+        : `Не удалось вычислить цифровой отпечаток файла: ${err?.message || 'ошибка чтения'}`,
       signature,
     };
   }
@@ -227,7 +237,9 @@ export async function verifyDocumentWithoutWallet(
     console.error('Failed to fetch transaction from Solana devnet:', err);
     return {
       status: 'error',
-      message: `Ошибка связи с сетью Solana devnet: ${err?.message || 'проверьте интернет-соединение'}.`,
+      message: isEn
+        ? `Connection error with Solana devnet: ${err?.message || 'check internet connection'}.`
+        : `Ошибка связи с сетью Solana devnet: ${err?.message || 'проверьте интернет-соединение'}.`,
       signature,
     };
   }
@@ -235,7 +247,9 @@ export async function verifyDocumentWithoutWallet(
   if (!tx) {
     return {
       status: 'error',
-      message: 'Транзакция не найдена в сети Solana devnet. Проверьте правильность подписи или ссылки, и убедитесь, что транзакция была отправлена в сеть devnet.',
+      message: isEn
+        ? 'Transaction not found on Solana devnet. Check signature or link and ensure it was submitted to devnet.'
+        : 'Транзакция не найдена в сети Solana devnet. Проверьте правильность подписи или ссылки, и убедитесь, что транзакция была отправлена в сеть devnet.',
       signature,
     };
   }
@@ -245,13 +259,15 @@ export async function verifyDocumentWithoutWallet(
   if (!memoData) {
     return {
       status: 'error',
-      message: 'В указанной транзакции не найдена запись Kelisim (ожидалась запись Memo формата «Kelisim v1 | sha256:...»).',
+      message: isEn
+        ? 'No Kelisim record found in this transaction (expected "Kelisim v1 | sha256:...").'
+        : 'В указанной транзакции не найдена запись Kelisim (ожидалась запись Memo формата «Kelisim v1 | sha256:...»).',
       signature,
     };
   }
 
   const recordedHash = memoData.hash;
-  const blockTimestamp = formatBlockTime(tx.blockTime);
+  const blockTimestamp = formatBlockTime(tx.blockTime, lang);
   const explorerUrl = `https://explorer.solana.com/tx/${signature}?cluster=devnet`;
 
   // 4. Compare hashes

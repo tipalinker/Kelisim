@@ -28,17 +28,22 @@ import {
   extractSolanaSignature 
 } from '../utils/solanaVerify';
 import { BlockchainRecord } from '../utils/solanaWallet';
+import { t, Language, formatDateTime } from '../i18n';
 
 interface DocumentVerificationProps {
   recentRecords?: BlockchainRecord[];
   onSwitchToAudit?: () => void;
   onVerifyingChange?: (isVerifying: boolean) => void;
+  initialSignature?: string;
+  lang?: Language;
 }
 
 export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
   onVerifyingChange,
+  initialSignature,
+  lang = 'en',
 }) => {
-  const [signatureInput, setSignatureInput] = useState<string>('');
+  const [signatureInput, setSignatureInput] = useState<string>(initialSignature || '');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -48,6 +53,13 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
 
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync initialSignature prop if it changes
+  React.useEffect(() => {
+    if (initialSignature) {
+      setSignatureInput(initialSignature);
+    }
+  }, [initialSignature]);
 
   // Notify parent component about verification in progress
   React.useEffect(() => {
@@ -60,7 +72,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
 
     // Validate size (up to 4MB)
     if (file.size > 4 * 1024 * 1024) {
-      setFileError('Размер файла превышает 4 МБ.');
+      setFileError(t('verify.fileSizeError', undefined, lang));
       setSelectedFile(null);
       return;
     }
@@ -89,11 +101,11 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
 
   const handleVerify = async () => {
     if (!signatureInput.trim()) {
-      setFileError('Введите ссылку на транзакцию или саму подпись.');
+      setFileError(t('verify.enterSignatureError', undefined, lang));
       return;
     }
     if (!selectedFile) {
-      setFileError('Загрузите файл договора для проверки.');
+      setFileError(t('verify.uploadFileError', undefined, lang));
       return;
     }
 
@@ -102,13 +114,13 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
     setFileError(null);
 
     try {
-      const outcome = await verifyDocumentAgainstSolana(signatureInput, selectedFile);
+      const outcome = await verifyDocumentAgainstSolana(signatureInput, selectedFile, lang);
       setResult(outcome);
     } catch (err: any) {
       console.error('Verification error:', err);
       setResult({
         status: 'error',
-        message: err?.message || 'Непредвиденная ошибка при проверке документа.',
+        message: err?.message || t('verify.unexpectedError', undefined, lang),
       });
     } finally {
       setIsVerifying(false);
@@ -137,14 +149,13 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
         <div className="space-y-1.5">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-[11px] font-medium">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Подключение кошелька не требуется</span>
+            <span>{t('verify.noWalletBadge', undefined, lang)}</span>
           </div>
           <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-            Проверить подлинность документа
+            {t('verify.title', undefined, lang)}
           </h2>
           <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-xl">
-            Сравните файл договора с неизменяемой записью в блокчейне Solana devnet.
-            Хеш вычисляется исключительно в вашем браузере, файл никуда не отправляется и ИИ не задействуется.
+            {t('verify.description', undefined, lang)}
           </p>
         </div>
       </div>
@@ -154,7 +165,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
         {/* Field 1: Signature or Solana Explorer URL */}
         <div className="space-y-2">
           <label className="block text-xs font-semibold text-slate-200">
-            Ссылка на транзакцию в Solana Explorer или подпись (signature):
+            {t('verify.inputLabel', undefined, lang)}
           </label>
           <div className="relative flex items-center">
             <input
@@ -164,7 +175,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                 setSignatureInput(e.target.value);
                 if (result) setResult(null);
               }}
-              placeholder="Вставьте ссылку https://explorer.solana.com/tx/... или подпись транзакции"
+              placeholder={t('verify.inputPlaceholder', undefined, lang)}
               className="w-full pl-3.5 pr-24 py-3 rounded-xl bg-[#080c0f] border border-slate-800 focus:border-emerald-500/60 focus:outline-none text-slate-200 text-xs sm:text-sm font-mono placeholder:text-slate-600 transition-colors"
             />
             <div className="absolute right-2 flex items-center gap-1">
@@ -175,8 +186,8 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                     setSignatureInput('');
                     setResult(null);
                   }}
-                  className="p-1.5 text-slate-500 hover:text-slate-300 rounded-lg"
-                  title="Очистить"
+                  className="p-1.5 text-slate-500 hover:text-slate-300 rounded-lg cursor-pointer"
+                  title={t('verify.clear', undefined, lang)}
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -184,11 +195,11 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
               <button
                 type="button"
                 onClick={handlePasteSignature}
-                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-sans font-medium flex items-center gap-1 transition-colors"
-                title="Вставить из буфера обмена"
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-sans font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                title={t('verify.pasteTooltip', undefined, lang)}
               >
                 <ClipboardPaste className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Вставить</span>
+                <span>{t('verify.paste', undefined, lang)}</span>
               </button>
             </div>
           </div>
@@ -197,7 +208,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
         {/* Field 2: File upload dropzone */}
         <div className="space-y-2">
           <label className="block text-xs font-semibold text-slate-200">
-            Файл договора для сверки:
+            {t('verify.fileLabel', undefined, lang)}
           </label>
 
           <input
@@ -242,7 +253,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                       {selectedFile.name}
                     </p>
                     <p className="text-xs text-slate-400 font-mono">
-                      {(selectedFile.size / 1024).toFixed(1)} КБ · готов к расчёту хеша
+                      {(selectedFile.size / 1024).toFixed(1)} {t('verify.readyForHash', undefined, lang)}
                     </p>
                   </div>
                 </div>
@@ -253,9 +264,9 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                     e.stopPropagation();
                     handleReset();
                   }}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors cursor-pointer"
                 >
-                  Заменить
+                  {t('verify.replace', undefined, lang)}
                 </button>
               </div>
             ) : (
@@ -265,10 +276,10 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                 </div>
                 <div className="space-y-1">
                   <p className="font-semibold text-white text-sm">
-                    Перетащите проверяемый файл сюда или нажмите
+                    {t('verify.dragDropPrompt', undefined, lang)}
                   </p>
                   <p className="text-xs text-slate-400">
-                    PDF, DOCX, TXT, PNG, JPG (до 4 МБ)
+                    {t('verify.fileFormats', undefined, lang)}
                   </p>
                 </div>
               </div>
@@ -288,7 +299,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
         <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-800/80">
           <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400" />
-            <span>Хеш считается только в браузере (crypto.subtle.digest).</span>
+            <span>{t('verify.hashBrowserOnly', undefined, lang)}</span>
           </div>
 
           <button
@@ -300,12 +311,12 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
             {isVerifying ? (
               <>
                 <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                <span>Получаем транзакцию из Solana devnet…</span>
+                <span>{t('verify.verifyingBtn', undefined, lang)}</span>
               </>
             ) : (
               <>
                 <FileSearch className="w-4 h-4 text-slate-950" />
-                <span>Проверить документ</span>
+                <span>{t('verify.verifyBtn', undefined, lang)}</span>
               </>
             )}
           </button>
@@ -318,7 +329,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
 
       {result && (
         <div className="animate-in fade-in zoom-in-95 duration-300">
-          {/* RESULT 1: MATCH (Зелёная карточка) */}
+          {/* RESULT 1: MATCH (Green Card) */}
           {result.status === 'match' && (
             <div className="bg-[#0b1410] border-2 border-emerald-500/60 rounded-2xl p-6 sm:p-8 shadow-[0_0_40px_rgba(16,185,129,0.18)] space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-500/20 pb-4">
@@ -328,10 +339,10 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                   </div>
                   <div>
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">
-                      Подлинность подтверждена
+                      {t('verify.matchTitle', undefined, lang)}
                     </span>
                     <h3 className="text-base sm:text-lg font-bold text-white">
-                      Документ не изменялся. Хеш совпадает с записью в блокчейне от {result.blockTimestamp || 'недавно'}
+                      {t('verify.matchDesc', { time: (result.blockTimeSeconds ? formatDateTime(result.blockTimeSeconds * 1000, lang) : result.blockTimestamp) || '' }, lang)}
                     </h3>
                   </div>
                 </div>
@@ -343,7 +354,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                     rel="noreferrer"
                     className="self-start sm:self-center px-3.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium flex items-center gap-1.5 transition-colors"
                   >
-                    <span>Смотреть в Solana Explorer</span>
+                    <span>{t('verify.viewInExplorer', undefined, lang)}</span>
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 )}
@@ -353,7 +364,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                 {/* File Name */}
                 <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <div className="text-slate-400 text-[11px] mb-1">Имя проверенного файла:</div>
+                  <div className="text-slate-400 text-[11px] mb-1">{t('verify.verifiedFileName', undefined, lang)}</div>
                   <div className="font-semibold text-white break-all flex items-center gap-2">
                     <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span>{result.fileName}</span>
@@ -362,10 +373,10 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
 
                 {/* Block timestamp */}
                 <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
-                  <div className="text-slate-400 text-[11px] mb-1">Дата и время блока:</div>
+                  <div className="text-slate-400 text-[11px] mb-1">{t('verify.blockTimestamp', undefined, lang)}</div>
                   <div className="font-semibold text-white flex items-center gap-2 font-mono">
                     <Clock className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>{result.blockTimestamp}</span>
+                    <span>{result.blockTimeSeconds ? formatDateTime(result.blockTimeSeconds * 1000, lang) : result.blockTimestamp}</span>
                   </div>
                 </div>
               </div>
@@ -374,22 +385,22 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
               <div className="p-4 rounded-xl bg-[#080c0f] border border-emerald-500/30 space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-semibold text-emerald-400">
-                    Совпадающий SHA-256 хеш:
+                    {t('verify.matchingHash', undefined, lang)}
                   </span>
                   <button
                     type="button"
                     onClick={() => copyText(result.fileHash || '', 'match_hash')}
-                    className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                    className="text-xs text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
                   >
                     {copiedHash === 'match_hash' ? (
                       <>
                         <Check className="w-3 h-3 text-emerald-400" />
-                        <span className="text-emerald-400">Скопировано</span>
+                        <span className="text-emerald-400">{t('verify.copied', undefined, lang)}</span>
                       </>
                     ) : (
                       <>
                         <Copy className="w-3 h-3" />
-                        <span>Копировать</span>
+                        <span>{t('verify.copy', undefined, lang)}</span>
                       </>
                     )}
                   </button>
@@ -400,12 +411,12 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
               </div>
 
               <div className="p-3.5 rounded-xl bg-emerald-950/20 border border-emerald-500/20 text-xs text-emerald-300/90 leading-relaxed">
-                ✓ Файл полностью аутентичен. Ни один символ, дата, сумма или пункт не подвергались изменениям с момента фиксации транзакции в devnet.
+                {t('verify.matchNote', undefined, lang)}
               </div>
             </div>
           )}
 
-          {/* RESULT 2: MISMATCH (Красная карточка) */}
+          {/* RESULT 2: MISMATCH (Red Card) */}
           {result.status === 'mismatch' && (
             <div className="bg-[#140b0d] border-2 border-rose-500/60 rounded-2xl p-6 sm:p-8 shadow-[0_0_40px_rgba(244,63,94,0.18)] space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-rose-500/20 pb-4">
@@ -415,10 +426,10 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                   </div>
                   <div>
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-400">
-                      Несоответствие
+                      {t('verify.mismatchTitle', undefined, lang)}
                     </span>
                     <h3 className="text-base sm:text-lg font-bold text-white">
-                      Документ отличается от зафиксированного
+                      {t('verify.mismatchSubtitle', undefined, lang)}
                     </h3>
                   </div>
                 </div>
@@ -430,15 +441,14 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                     rel="noreferrer"
                     className="self-start sm:self-center px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1.5 transition-colors"
                   >
-                    <span>Смотреть в Explorer</span>
+                    <span>{t('verify.viewInExplorer', undefined, lang)}</span>
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 )}
               </div>
 
               <p className="text-xs sm:text-sm text-rose-200/90 leading-relaxed">
-                Цифровой отпечаток загруженного файла не совпадает с хешем, зафиксированным в данной транзакции. 
-                Даже добавление одного знака, замена фамилии, даты или суммы кардинально меняет SHA-256.
+                {t('verify.mismatchDesc', undefined, lang)}
               </p>
 
               {/* Side-by-side Hashes */}
@@ -447,22 +457,22 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                 <div className="p-3.5 rounded-xl bg-[#080c0f] border border-rose-500/40 space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-semibold text-rose-400">
-                      Хеш загруженного файла ({result.fileName}):
+                      {t('verify.uploadedFileHash', { name: result.fileName || '' }, lang)}
                     </span>
                     <button
                       type="button"
                       onClick={() => copyText(result.fileHash || '', 'file_hash')}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
                     >
                       {copiedHash === 'file_hash' ? (
                         <>
                           <Check className="w-3 h-3 text-emerald-400" />
-                          <span className="text-emerald-400">Скопировано</span>
+                          <span className="text-emerald-400">{t('verify.copied', undefined, lang)}</span>
                         </>
                       ) : (
                         <>
                           <Copy className="w-3 h-3" />
-                          <span>Копировать</span>
+                          <span>{t('verify.copy', undefined, lang)}</span>
                         </>
                       )}
                     </button>
@@ -476,22 +486,22 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                 <div className="p-3.5 rounded-xl bg-[#080c0f] border border-slate-700 space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-semibold text-slate-300">
-                      Хеш из записи Memo в блокчейне Solana:
+                      {t('verify.blockchainHash', undefined, lang)}
                     </span>
                     <button
                       type="button"
                       onClick={() => copyText(result.blockchainHash || '', 'chain_hash')}
-                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
                     >
                       {copiedHash === 'chain_hash' ? (
                         <>
                           <Check className="w-3 h-3 text-emerald-400" />
-                          <span className="text-emerald-400">Скопировано</span>
+                          <span className="text-emerald-400">{t('verify.copied', undefined, lang)}</span>
                         </>
                       ) : (
                         <>
                           <Copy className="w-3 h-3" />
-                          <span>Копировать</span>
+                          <span>{t('verify.copy', undefined, lang)}</span>
                         </>
                       )}
                     </button>
@@ -514,13 +524,17 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                 <div className="space-y-1">
                   <h3 className="text-base font-bold text-white">
                     {result.status === 'not_found'
-                      ? 'Транзакция не найдена в Solana devnet'
+                      ? t('verify.txNotFoundTitle', undefined, lang)
                       : result.status === 'no_kelisim_memo'
-                      ? 'В транзакции нет записи Kelisim'
-                      : 'Ошибка проверки'}
+                      ? t('verify.noMemoTitle', undefined, lang)
+                      : t('verify.errorTitle', undefined, lang)}
                   </h3>
                   <p className="text-xs sm:text-sm text-amber-200/90 leading-relaxed">
-                    {result.message}
+                    {result.status === 'not_found'
+                      ? t('verify.txNotFoundDesc', undefined, lang)
+                      : result.status === 'no_kelisim_memo'
+                      ? t('verify.noMemoDesc', undefined, lang)
+                      : result.message}
                   </p>
                 </div>
               </div>
@@ -536,7 +550,7 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
                     rel="noreferrer"
                     className="text-xs text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1"
                   >
-                    <span>Проверить в Solana Explorer</span>
+                    <span>{t('verify.checkInExplorer', undefined, lang)}</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
@@ -549,10 +563,10 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
             <button
               type="button"
               onClick={handleReset}
-              className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-medium border border-slate-800 transition-colors flex items-center gap-1.5"
+              className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-medium border border-slate-800 transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Проверить другой документ</span>
+              <span>{t('verify.verifyAnotherBtn', undefined, lang)}</span>
             </button>
           </div>
         </div>
@@ -560,3 +574,4 @@ export const DocumentVerification: React.FC<DocumentVerificationProps> = ({
     </div>
   );
 };
+
