@@ -79,7 +79,7 @@ npm run build
 ## Team
 
 - **Rasim Musayev** — Founder & Lead Developer
-- **Fatima Panabek** — Operations & Legal Strategy
-- **Bagdan Orynbassar** — Product & Analytics
-- **Alisher Balgaliy** — Frontend Engineering
-- **Nurzhigit Kairatuly** — Legal Domain & Compliance
+- **Fatima Panabek** — Demo & Presentation Support
+- **Bagdan Orynbassar** — Product Ideation & Feedback
+- **Alisher Balgaliy** — Ideation & Product Contributor
+
